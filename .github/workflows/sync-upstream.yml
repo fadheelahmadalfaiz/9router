@@ -1,0 +1,31 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 4 * * *'  # Setiap hari jam 11 WIB (4 UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: custom-patch
+
+      - name: Sync upstream and rebase patch
+        run: |
+          git remote add upstream https://github.com/decolua/9router.git
+          git fetch upstream
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git rebase upstream/master || {
+            echo "⚠️ Rebase conflict! Aborting..."
+            git rebase --abort
+            exit 1
+          }
+          git push origin custom-patch --force
