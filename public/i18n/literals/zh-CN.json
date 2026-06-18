@@ -305,7 +305,7 @@
   "OAuth Providers": "OAuth 提供商",
   "Observability": "可观察性",
   "Only letters, numbers, - and _ allowed": "只允许使用字母、数字、- 和 _",
-  "Only one connection is allowed per compatible node. Add another node if you need more connections.": "每个兼容节点仅允许一个连接。如果需要更多连接，请添加另一个节点。",
+  "You can add multiple connections per compatible node.": "每个兼容节点允许添加多个连接。",
   "Open Claw - Manual Configuration": "Open Claw - 手动配置",
   "Open Claw CLI not installed": "未安装 Open Claw CLI",
   "Open DevTools (F12) → Application/Storage → Cookies": "打开 DevTools (F12) → 应用程序/存储 → Cookie",

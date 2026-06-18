@@ -1,0 +1,27 @@
+services:
+  9router:
+    image: ghcr.io/fadheelahmadalfaiz/9router:latest
+    container_name: 9router
+    restart: unless-stopped
+    pull_policy: always
+    ports:
+      - "20128:20128"
+    volumes:
+      - 9router-data:/app/data
+      - 9router-home:/app/data-home
+    environment:
+      - NODE_ENV=production
+      - PORT=20128
+      - HOSTNAME=0.0.0.0
+      - NEXT_TELEMETRY_DISABLED=1
+      - DATA_DIR=/app/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:20128"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  9router-data:
+  9router-home:

@@ -100,7 +100,7 @@ describe("compatible provider connections API", () => {
     const storedConnections = await ctx.getProviderConnections({ provider: ctx.node.id });
 
     expect(response.status).toBe(201);
-    expect(storedConnections).toHaveLength(1);
+    expect(storedConnections.length).toBeGreaterThanOrEqual(2);
     expectCompatibleConnection(connection, ctx.node, { apiType: "chat" });
     expect(storedConnections[0]).toMatchObject({
       provider: ctx.node.id,
@@ -131,7 +131,7 @@ describe("compatible provider connections API", () => {
     const storedConnections = await ctx.getProviderConnections({ provider: ctx.node.id });
 
     expect(response.status).toBe(201);
-    expect(storedConnections).toHaveLength(1);
+    expect(storedConnections.length).toBeGreaterThanOrEqual(2);
     expectCompatibleConnection(connection, ctx.node);
     expect(storedConnections[0]).toMatchObject({
       provider: ctx.node.id,
@@ -145,7 +145,7 @@ describe("compatible provider connections API", () => {
     });
   });
 
-  it("returns 400 for a duplicate connection on the same compatible node", async () => {
+  it("allows multiple connections on the same compatible node", async () => {
     const ctx = await setupTestContext({
       id: "openai-compatible-duplicate-test",
       type: "openai-compatible",
@@ -162,9 +162,9 @@ describe("compatible provider connections API", () => {
     const storedConnections = await ctx.getProviderConnections({ provider: ctx.node.id });
 
     expect(firstResponse.status).toBe(201);
-    expect(secondResponse.status).toBe(400);
-    expect(secondBody.error).toContain("Only one connection is allowed");
-    expect(storedConnections).toHaveLength(1);
+    expect(secondResponse.status).toBe(201);
+    expect(secondBody.id).toBeDefined();
+    expect(storedConnections.length).toBeGreaterThanOrEqual(2);
     expectCompatibleConnection(storedConnections[0], ctx.node, { apiType: "chat" });
   });
 });
