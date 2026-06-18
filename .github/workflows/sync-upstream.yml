@@ -2,7 +2,7 @@ name: Sync Upstream
 
 on:
   schedule:
-    - cron: '0 4 * * *'
+    - cron: '0 4 * * *'  # Setiap hari jam 11 WIB
   workflow_dispatch:
 
 permissions:
@@ -11,6 +11,8 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,9 +20,11 @@ jobs:
           ref: custom-patch
 
       - name: Sync upstream and merge
+        id: check
         run: |
           git remote add upstream https://github.com/decolua/9router.git || git remote set-url upstream https://github.com/decolua/9router.git
           git fetch upstream
+          BEFORE=$(git rev-parse HEAD)
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git merge upstream/master --no-edit -X ours || {
@@ -28,4 +32,18 @@ jobs:
             git merge --abort 2>/dev/null
             git merge upstream/master --no-edit -X theirs
           }
+          AFTER=$(git rev-parse HEAD)
           git push origin custom-patch
+          if [ "$BEFORE" != "$AFTER" ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Upstream updated, triggering image build..."
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ️ No upstream changes."
+          fi
+
+  build-and-push:
+    needs: sync
+    if: needs.sync.outputs.has_changes == 'true'
+    uses: ./.github/workflows/docker-publish.yml
+    secrets: inherit
