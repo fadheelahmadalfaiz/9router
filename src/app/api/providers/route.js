@@ -151,7 +151,6 @@ export async function POST(request) {
       if (!node) {
         return NextResponse.json({ error: "Custom Embedding node not found" }, { status: 404 });
       }
-      }
       providerSpecificData = {
         prefix: node.prefix,
         baseUrl: node.baseUrl,
