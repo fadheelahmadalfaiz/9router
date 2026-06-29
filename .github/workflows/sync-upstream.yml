@@ -2,7 +2,7 @@ name: Sync Upstream
 
 on:
   schedule:
-    - cron: '0 4 * * *'  # Setiap hari jam 11 WIB
+    - cron: '0 4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: custom-patch
+          ref: master
 
       - name: Sync upstream and merge
         id: check
@@ -28,13 +28,13 @@ jobs:
           BEFORE=$(git rev-parse HEAD)
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git merge upstream/master --no-edit -X ours || {
-            echo "⚠️ Auto-merge conflict, falling back to theirs..."
+          git merge upstream/master --no-edit -X theirs || {
+            echo "⚠️ Auto-merge conflict, falling back to ours..."
             git merge --abort 2>/dev/null
-            git merge upstream/master --no-edit -X theirs
+            git merge upstream/master --no-edit -X ours
           }
           AFTER=$(git rev-parse HEAD)
-          git push origin custom-patch
+          git push origin master
           if [ "$BEFORE" != "$AFTER" ]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             echo "✅ Upstream updated, triggering image build..."
