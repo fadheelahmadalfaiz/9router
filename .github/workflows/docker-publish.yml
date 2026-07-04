@@ -5,7 +5,18 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: false
+        default: custom-patch
   workflow_call:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: false
+        type: string
+        default: custom-patch
 
 env:
   GHCR_IMAGE: ghcr.io/${{ github.repository }}
@@ -19,6 +30,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: docker/setup-buildx-action@v3
 

@@ -2,7 +2,8 @@ name: Sync Upstream
 
 on:
   schedule:
-    - cron: '0 4 * * *'
+    # Every hour: keep master synced from upstream, then regenerate custom-patch from master.
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -20,31 +21,59 @@ jobs:
           fetch-depth: 0
           ref: master
 
-      - name: Sync upstream and merge
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Sync upstream → master → custom-patch
         id: check
         run: |
+          set -euo pipefail
           git remote add upstream https://github.com/decolua/9router.git || git remote set-url upstream https://github.com/decolua/9router.git
-          git fetch upstream
-          BEFORE=$(git rev-parse HEAD)
+          git fetch upstream master
+          git fetch origin master custom-patch || true
+          BEFORE_MASTER=$(git rev-parse origin/master 2>/dev/null || git rev-parse HEAD)
+          BEFORE_CUSTOM=$(git rev-parse origin/custom-patch 2>/dev/null || echo none)
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 1) Keep repo master tracking upstream master.
+          git checkout master
           git merge upstream/master --no-edit -X theirs || {
-            echo "⚠️ Auto-merge conflict, falling back to ours..."
-            git merge --abort 2>/dev/null
-            git merge upstream/master --no-edit -X ours
+            echo "⚠️ Auto-merge conflict on master, preferring upstream..."
+            git merge --abort 2>/dev/null || true
+            git reset --hard upstream/master
           }
-          AFTER=$(git rev-parse HEAD)
           git push origin master
-          if [ "$BEFORE" != "$AFTER" ]; then
+
+          # 2) Regenerate custom-patch from the freshest master, then apply our patch script.
+          # This avoids custom-patch silently lagging behind master.
+          git checkout -B custom-patch master
+          node scripts/apply-custom-patches.mjs
+
+          if ! git diff --quiet; then
+            git add src/app/api/providers/route.js scripts/apply-custom-patches.mjs .github/workflows/sync-upstream.yml
+            git commit -m "feat: apply custom 9router patches"
+          fi
+
+          git push --force-with-lease origin custom-patch
+
+          AFTER_MASTER=$(git rev-parse master)
+          AFTER_CUSTOM=$(git rev-parse custom-patch)
+
+          if [ "$BEFORE_MASTER" != "$AFTER_MASTER" ] || [ "$BEFORE_CUSTOM" != "$AFTER_CUSTOM" ]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "✅ Upstream updated, triggering image build..."
+            echo "✅ Branches updated, triggering image build from custom-patch..."
           else
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "ℹ️ No upstream changes."
+            echo "ℹ️ No branch changes."
           fi
 
   build-and-push:
     needs: sync
     if: needs.sync.outputs.has_changes == 'true'
     uses: ./.github/workflows/docker-publish.yml
+    with:
+      ref: custom-patch
     secrets: inherit
