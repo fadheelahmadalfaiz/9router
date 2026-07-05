@@ -1,14 +1,22 @@
-// Claude-inspired color palette for Endpoint Proxy
-// Light theme: Warm beige/cream tones
-// Dark theme: Deep charcoal/brown tones
+// 9Router color palette
+// Light theme: warm neutral surfaces with route-blue primary
+// Dark theme: deep neutral surfaces with copper secondary accent
 
 export const COLORS = {
-  // Primary - Warm Coral/Terracotta (Claude-like)
+  // Primary - route blue (#023957)
   primary: {
-    DEFAULT: "#D97757",
-    hover: "#C56243",
-    light: "#E8A58C",
-    dark: "#B0664D",
+    DEFAULT: "#023957",
+    hover: "#022F49",
+    light: "#5D8EA8",
+    dark: "#011A28",
+  },
+
+  // Secondary - warm complementary copper accent
+  secondary: {
+    DEFAULT: "#D98A35",
+    hover: "#B96F24",
+    light: "#F1B25E",
+    dark: "#653A17",
   },
 
   // Light theme backgrounds
@@ -55,6 +63,8 @@ export const CSS_VARIABLES = {
   light: {
     "--color-primary": COLORS.primary.DEFAULT,
     "--color-primary-hover": COLORS.primary.hover,
+    "--color-secondary": COLORS.secondary.DEFAULT,
+    "--color-secondary-hover": COLORS.secondary.hover,
     "--color-bg": COLORS.light.bg,
     "--color-bg-alt": COLORS.light.bgAlt,
     "--color-surface": COLORS.light.surface,
@@ -66,6 +76,8 @@ export const CSS_VARIABLES = {
   dark: {
     "--color-primary": COLORS.primary.DEFAULT,
     "--color-primary-hover": COLORS.primary.hover,
+    "--color-secondary": COLORS.secondary.DEFAULT,
+    "--color-secondary-hover": COLORS.secondary.light,
     "--color-bg": COLORS.dark.bg,
     "--color-bg-alt": COLORS.dark.bgAlt,
     "--color-surface": COLORS.dark.surface,

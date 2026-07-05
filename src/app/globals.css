@@ -7,25 +7,41 @@
 .fonts-loaded .material-symbols-outlined { visibility: visible; }
 
 /* ============================================================
-   9Router palette — adopted from 9remote_private/web
-   Brand orange (dark) / soft coral (light), neutral warm bases
+   9Router palette — deep route blue primary, warm complementary accent,
+   neutral warm bases
    ============================================================ */
 :root {
-  /* Brand scale (light) - centered on #E56A4A */
-  --color-brand-50: #fdf1ed;
-  --color-brand-100: #fadccf;
-  --color-brand-200: #f4b59c;
-  --color-brand-300: #ee8d6a;
-  --color-brand-400: #ea7855;
-  --color-brand-500: #E56A4A;
-  --color-brand-600: #cc5236;
-  --color-brand-700: #a64027;
-  --color-brand-800: #7a2f1d;
-  --color-brand-900: #4d1e12;
+  /* Brand scale (light) - centered on route blue #023957 */
+  --color-brand-50: #e6eef2;
+  --color-brand-100: #c2d4de;
+  --color-brand-200: #8fb1c3;
+  --color-brand-300: #5d8ea8;
+  --color-brand-400: #2f6684;
+  --color-brand-500: #023957;
+  --color-brand-600: #022f49;
+  --color-brand-700: #012438;
+  --color-brand-800: #011a28;
+  --color-brand-900: #000f18;
+
+  /* Secondary scale - complementary copper accent for warm neutral surfaces */
+  --color-secondary-50: #fff6ea;
+  --color-secondary-100: #fce7c7;
+  --color-secondary-200: #f8cf93;
+  --color-secondary-300: #f1b25e;
+  --color-secondary-400: #e89b3f;
+  --color-secondary-500: #d98a35;
+  --color-secondary-600: #b96f24;
+  --color-secondary-700: #8f531c;
+  --color-secondary-800: #653a17;
+  --color-secondary-900: #3d220e;
 
   /* Primary (legacy alias for backward compat with existing components) */
   --color-primary: var(--color-brand-500);
   --color-primary-hover: var(--color-brand-600);
+  --color-primary-rgb: 2, 57, 87;
+  --color-secondary: var(--color-secondary-500);
+  --color-secondary-hover: var(--color-secondary-600);
+  --color-secondary-rgb: 217, 138, 53;
 
   /* Surfaces & backgrounds (light) */
   --color-bg: #FDFAF6;
@@ -57,32 +73,47 @@
 
   /* Shadows */
   --shadow-soft: 0 1px 2px 0 rgba(0,0,0,0.04);
-  --shadow-warm: 0 2px 12px -2px rgba(229, 106, 74, 0.18);
+  --shadow-warm: 0 2px 12px -2px rgba(var(--color-secondary-rgb), 0.18);
   --shadow-elevated: 0 12px 28px -4px rgba(60, 50, 45, 0.06);
   --shadow-elev:
     inset 0 1px 0 0 rgba(255,255,255,0.8),
     0 1px 2px rgba(15,23,42,0.04),
     0 12px 36px -8px rgba(15,23,42,0.10);
-  --shadow-focus: 0 0 0 3px rgba(229,106,74,0.18);
+  --shadow-focus: 0 0 0 3px rgba(var(--color-secondary-rgb), 0.22);
 
   color-scheme: light;
 }
 
 .dark {
-  /* Brand scale (dark) - centered on #E56A4A, same as light for consistency */
-  --color-brand-50: #fdf1ed;
-  --color-brand-100: #fadccf;
-  --color-brand-200: #f4b59c;
-  --color-brand-300: #ee8d6a;
-  --color-brand-400: #ea7855;
-  --color-brand-500: #E56A4A;
-  --color-brand-600: #cc5236;
-  --color-brand-700: #a64027;
-  --color-brand-800: #7a2f1d;
-  --color-brand-900: #4d1e12;
+  /* Brand scale (dark) - same route blue identity for consistent utilities */
+  --color-brand-50: #e6eef2;
+  --color-brand-100: #c2d4de;
+  --color-brand-200: #8fb1c3;
+  --color-brand-300: #5d8ea8;
+  --color-brand-400: #2f6684;
+  --color-brand-500: #023957;
+  --color-brand-600: #022f49;
+  --color-brand-700: #012438;
+  --color-brand-800: #011a28;
+  --color-brand-900: #000f18;
 
-  --color-primary: #E56A4A;
-  --color-primary-hover: #cc5236;
+  --color-secondary-50: #fff6ea;
+  --color-secondary-100: #fce7c7;
+  --color-secondary-200: #f8cf93;
+  --color-secondary-300: #f1b25e;
+  --color-secondary-400: #e89b3f;
+  --color-secondary-500: #d98a35;
+  --color-secondary-600: #b96f24;
+  --color-secondary-700: #8f531c;
+  --color-secondary-800: #653a17;
+  --color-secondary-900: #3d220e;
+
+  --color-primary: #023957;
+  --color-primary-hover: #022f49;
+  --color-primary-rgb: 2, 57, 87;
+  --color-secondary: #d98a35;
+  --color-secondary-hover: #f1b25e;
+  --color-secondary-rgb: 217, 138, 53;
 
   /* Surfaces (dark - Claude-like neutral warm) */
   --color-bg: #1a1a1a;
@@ -106,13 +137,13 @@
   --color-info: #60a5fa;
 
   --shadow-soft: 0 1px 2px 0 rgba(0,0,0,0.3);
-  --shadow-warm: 0 2px 12px -2px rgba(229, 106, 74, 0.25);
+  --shadow-warm: 0 2px 12px -2px rgba(var(--color-secondary-rgb), 0.25);
   --shadow-elevated: 0 12px 28px -4px rgba(0, 0, 0, 0.45);
   --shadow-elev:
     inset 0 1px 0 0 rgba(255,255,255,0.06),
     0 1px 2px rgba(0,0,0,0.4),
     0 16px 48px -8px rgba(0,0,0,0.55);
-  --shadow-focus: 0 0 0 3px rgba(229, 106, 74, 0.18);
+  --shadow-focus: 0 0 0 3px rgba(var(--color-secondary-rgb), 0.24);
 
   color-scheme: dark;
 }
@@ -146,9 +177,22 @@ select {
   --color-brand-800: var(--color-brand-800);
   --color-brand-900: var(--color-brand-900);
 
+  --color-secondary-50: var(--color-secondary-50);
+  --color-secondary-100: var(--color-secondary-100);
+  --color-secondary-200: var(--color-secondary-200);
+  --color-secondary-300: var(--color-secondary-300);
+  --color-secondary-400: var(--color-secondary-400);
+  --color-secondary-500: var(--color-secondary-500);
+  --color-secondary-600: var(--color-secondary-600);
+  --color-secondary-700: var(--color-secondary-700);
+  --color-secondary-800: var(--color-secondary-800);
+  --color-secondary-900: var(--color-secondary-900);
+
   /* Primary aliases */
   --color-primary: var(--color-primary);
   --color-primary-hover: var(--color-primary-hover);
+  --color-secondary: var(--color-secondary);
+  --color-secondary-hover: var(--color-secondary-hover);
 
   /* Semantic */
   --color-bg: var(--color-bg);
@@ -163,7 +207,7 @@ select {
   --color-text-main: var(--color-text-main);
   --color-text-muted: var(--color-text-muted);
   --color-text-subtle: var(--color-text-subtle);
-  --color-accent: var(--color-brand-500);
+  --color-accent: var(--color-secondary);
   --color-danger: var(--color-danger);
   --color-success: var(--color-success);
   --color-warning: var(--color-warning);
@@ -209,12 +253,12 @@ body {
 
 /* Selection - brand-tinted */
 ::selection {
-  background-color: rgba(229, 106, 74, 0.25);
+  background-color: rgba(var(--color-secondary-rgb), 0.26);
   color: var(--color-primary);
 }
 .dark ::selection {
-  background-color: rgba(229, 106, 74, 0.3);
-  color: var(--color-brand-300);
+  background-color: rgba(var(--color-secondary-rgb), 0.32);
+  color: var(--color-secondary-100);
 }
 
 /* iOS keyboard accent */
@@ -240,19 +284,19 @@ input, textarea {
 /* Thin horizontal scrollbar - brand colored */
 .scroll-thin-x {
   scrollbar-width: thin;
-  scrollbar-color: rgba(229, 106, 74, 0.55) transparent;
+  scrollbar-color: rgba(var(--color-secondary-rgb), 0.55) transparent;
 }
 .dark .scroll-thin-x {
-  scrollbar-color: rgba(229, 106, 74, 0.55) transparent;
+  scrollbar-color: rgba(var(--color-secondary-rgb), 0.55) transparent;
 }
 .scroll-thin-x::-webkit-scrollbar { height: 3px; }
 .scroll-thin-x::-webkit-scrollbar-track { background: transparent; }
 .scroll-thin-x::-webkit-scrollbar-thumb {
-  background: rgba(229, 106, 74, 0.55);
+  background: rgba(var(--color-secondary-rgb), 0.55);
   border-radius: 3px;
 }
 .dark .scroll-thin-x::-webkit-scrollbar-thumb {
-  background: rgba(229, 106, 74, 0.55);
+  background: rgba(var(--color-secondary-rgb), 0.55);
 }
 
 /* Reusable elevated card */
@@ -355,12 +399,12 @@ button:disabled,
 
 @keyframes border-glow {
   0%, 100% {
-    box-shadow: 0 0 5px rgba(229, 106, 74, 0.3), 0 0 10px rgba(229, 106, 74, 0.2);
-    border-color: rgba(229, 106, 74, 0.5);
+    box-shadow: 0 0 5px rgba(var(--color-secondary-rgb), 0.3), 0 0 10px rgba(var(--color-secondary-rgb), 0.2);
+    border-color: rgba(var(--color-secondary-rgb), 0.5);
   }
   50% {
-    box-shadow: 0 0 10px rgba(229, 106, 74, 0.5), 0 0 20px rgba(229, 106, 74, 0.3);
-    border-color: rgba(229, 106, 74, 0.8);
+    box-shadow: 0 0 10px rgba(var(--color-secondary-rgb), 0.5), 0 0 20px rgba(var(--color-secondary-rgb), 0.3);
+    border-color: rgba(var(--color-secondary-rgb), 0.8);
   }
 }
 .animate-border-glow { animation: border-glow 2s ease-in-out infinite; }
@@ -393,8 +437,8 @@ button:disabled,
   100% { transform: translateX(220%) skewX(-20deg); }
 }
 @keyframes ctaGlowPulse {
-  0%, 100% { box-shadow: 0 8px 24px -8px rgba(229, 106, 74, 0.45), 0 0 0 0 rgba(229, 106, 74, 0.5); }
-  50% { box-shadow: 0 12px 32px -8px rgba(229, 106, 74, 0.6), 0 0 0 8px rgba(229, 106, 74, 0); }
+  0%, 100% { box-shadow: 0 8px 24px -8px rgba(var(--color-secondary-rgb), 0.45), 0 0 0 0 rgba(var(--color-secondary-rgb), 0.5); }
+  50% { box-shadow: 0 12px 32px -8px rgba(var(--color-secondary-rgb), 0.6), 0 0 0 8px rgba(var(--color-secondary-rgb), 0); }
 }
 .btn-cta {
   position: relative;
@@ -420,13 +464,13 @@ button:disabled,
 .dot-grid-bg {
   background-color: var(--color-bg);
   background-image:
-    radial-gradient(circle at 15% 20%, rgba(229, 106, 74, 0.10) 0%, transparent 40%),
-    radial-gradient(circle at 85% 80%, rgba(229, 106, 74, 0.06) 0%, transparent 40%);
+    radial-gradient(circle at 15% 20%, rgba(var(--color-primary-rgb), 0.10) 0%, transparent 40%),
+    radial-gradient(circle at 85% 80%, rgba(var(--color-secondary-rgb), 0.08) 0%, transparent 40%);
 }
 .dark .dot-grid-bg {
   background-image:
-    radial-gradient(circle at 15% 20%, rgba(229, 106, 74, 0.18) 0%, transparent 40%),
-    radial-gradient(circle at 85% 80%, rgba(229, 106, 74, 0.10) 0%, transparent 40%);
+    radial-gradient(circle at 15% 20%, rgba(var(--color-primary-rgb), 0.22) 0%, transparent 40%),
+    radial-gradient(circle at 85% 80%, rgba(var(--color-secondary-rgb), 0.12) 0%, transparent 40%);
 }
 
 /* Landing-style faint grid overlay (use absolute pos inside relative parent) */
