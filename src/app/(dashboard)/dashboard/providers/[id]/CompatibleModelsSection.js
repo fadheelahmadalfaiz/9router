@@ -1,10 +1,23 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import PropTypes from "prop-types";
 import { Button } from "@/shared/components";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
-function CompatibleModelRow({ modelId, fullModel, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting }) {
+import { runSerialModelTests } from "@/shared/utils/serialModelTests";
+
+function createInitialTestAllProgress() {
+  return {
+    total: 0,
+    completed: 0,
+    passed: 0,
+    failed: 0,
+    stopped: false,
+    currentModelId: null,
+  };
+}
+
+function CompatibleModelRow({ modelId, fullModel, copied, onCopy, onDeleteAlias, onTest, testStatus, isTesting, isTestDisabled }) {
   const borderColor = testStatus === "ok"
     ? "border-green-500/40"
     : testStatus === "error"
@@ -46,8 +59,10 @@ function CompatibleModelRow({ modelId, fullModel, copied, onCopy, onDeleteAlias,
             <div className="relative group/btn">
               <button
                 onClick={onTest}
-                disabled={isTesting}
+                disabled={isTestDisabled}
                 className="p-0.5 hover:bg-sidebar rounded text-text-muted hover:text-primary transition-colors"
+                aria-label={isTesting ? `Testing ${modelId}` : `Test ${modelId}`}
+                title={isTesting ? `Testing ${modelId}` : `Test ${modelId}`}
               >
                 <span className="material-symbols-outlined text-sm" style={isTesting ? { animation: "spin 1s linear infinite" } : undefined}>
                   {isTesting ? "progress_activity" : "science"}
@@ -76,24 +91,94 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
   const [testingModelId, setTestingModelId] = useState(null);
+  const [isTestingAll, setIsTestingAll] = useState(false);
   const [modelTestResults, setModelTestResults] = useState({});
+  const [testAllProgress, setTestAllProgress] = useState(createInitialTestAllProgress);
+  const testAllAbortRef = useRef(null);
 
-  const handleTestModel = async (modelId) => {
-    if (testingModelId) return;
-    setTestingModelId(modelId);
-    try {
-      const res = await fetch("/api/models/test", {
+  const testOneCompatibleModel = async (modelId, { signal } = {}) => {
+    const res = await fetch("/api/models/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: `${providerStorageAlias}/${modelId}` }),
+        signal,
       });
-      const data = await res.json();
+    return res.json();
+  };
+
+  const handleTestModel = async (modelId) => {
+    if (testingModelId || isTestingAll) return;
+    setTestingModelId(modelId);
+    try {
+      const data = await testOneCompatibleModel(modelId);
       setModelTestResults((prev) => ({ ...prev, [modelId]: data.ok ? "ok" : "error" }));
     } catch {
       setModelTestResults((prev) => ({ ...prev, [modelId]: "error" }));
     } finally {
       setTestingModelId(null);
     }
+  };
+
+  const handleTestAllModels = async () => {
+    if (testingModelId || isTestingAll || allModels.length === 0) return;
+
+    const controller = new AbortController();
+    testAllAbortRef.current = controller;
+    setIsTestingAll(true);
+    setTestAllProgress({ ...createInitialTestAllProgress(), total: allModels.length });
+    setModelTestResults((prev) => {
+      const next = { ...prev };
+      for (const model of allModels) {
+        delete next[model.id];
+      }
+      return next;
+    });
+
+    try {
+      const outcome = await runSerialModelTests(
+        allModels,
+        (model, options) => testOneCompatibleModel(model.id, options),
+        {
+          onStart: (model) => {
+            setTestingModelId(model.id);
+            setTestAllProgress((prev) => ({ ...prev, currentModelId: model.id }));
+          },
+          onResult: (entry) => {
+            setModelTestResults((prev) => ({ ...prev, [entry.id]: entry.status }));
+            setTestAllProgress((prev) => ({
+              ...prev,
+              completed: prev.completed + 1,
+              passed: entry.status === "ok" ? prev.passed + 1 : prev.passed,
+              failed: entry.status === "error" ? prev.failed + 1 : prev.failed,
+            }));
+          },
+          onCancel: (results) => {
+            setTestAllProgress((prev) => ({
+              ...prev,
+              completed: results.length,
+              passed: results.filter((entry) => entry.status === "ok").length,
+              failed: results.filter((entry) => entry.status === "error").length,
+              stopped: true,
+              currentModelId: null,
+            }));
+          },
+        },
+        controller.signal,
+      );
+      if (outcome.status === "complete") {
+        setTestAllProgress((prev) => ({ ...prev, currentModelId: null }));
+      }
+    } finally {
+      if (testAllAbortRef.current === controller) {
+        testAllAbortRef.current = null;
+      }
+      setTestingModelId(null);
+      setIsTestingAll(false);
+    }
+  };
+
+  const handleStopTestAll = () => {
+    testAllAbortRef.current?.abort();
   };
 
   const allModels = getProviderCustomModelRows({
@@ -159,6 +244,14 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
   };
 
   const canImport = connections.some((conn) => conn.isActive !== false);
+  const canTestModels = connections.length > 0;
+  const showTestAllProgress = testAllProgress.total > 0;
+  const currentTestPosition = Math.min(testAllProgress.completed + 1, testAllProgress.total);
+  const testAllProgressLabel = testAllProgress.stopped
+    ? `Stopped after ${testAllProgress.completed} of ${testAllProgress.total}`
+    : isTestingAll
+    ? `Testing ${currentTestPosition} of ${testAllProgress.total}`
+    : `Completed ${testAllProgress.completed} of ${testAllProgress.total}`;
 
   return (
     <div className="flex flex-col gap-4">
@@ -185,7 +278,33 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
         <Button size="sm" variant="secondary" icon="download" onClick={handleImport} disabled={!canImport || importing}>
           {importing ? "Importing..." : "Import from /models"}
         </Button>
+        <Button size="sm" variant="secondary" icon="science" onClick={handleTestAllModels} disabled={!canTestModels || allModels.length === 0 || Boolean(testingModelId) || isTestingAll} loading={isTestingAll}>
+          {isTestingAll ? "Testing..." : "Auto Test All"}
+        </Button>
+        {isTestingAll && (
+          <Button size="sm" variant="secondary" icon="stop_circle" onClick={handleStopTestAll}>
+            Stop
+          </Button>
+        )}
       </div>
+
+      {showTestAllProgress && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs" role="status" aria-live="polite">
+          <span className="inline-flex items-center gap-1 font-semibold text-text-main">
+            <span className="material-symbols-outlined text-[16px]">
+              {testAllProgress.stopped ? "stop_circle" : isTestingAll ? "progress_activity" : "task_alt"}
+            </span>
+            {testAllProgressLabel}
+          </span>
+          {testAllProgress.currentModelId && (
+            <span className="min-w-0 truncate text-text-muted">
+              Current: <span className="font-mono text-text-main">{testAllProgress.currentModelId}</span>
+            </span>
+          )}
+          <span className="text-green-600 dark:text-green-400">Passed: {testAllProgress.passed}</span>
+          <span className="text-red-600 dark:text-red-400">Failed: {testAllProgress.failed}</span>
+        </div>
+      )}
 
       {!canImport && (
         <p className="text-xs text-text-muted">
@@ -203,9 +322,10 @@ export default function CompatibleModelsSection({ providerStorageAlias, provider
               copied={copied}
               onCopy={onCopy}
               onDeleteAlias={() => source === "custom" ? onDeleteCustomModel(id) : onDeleteAlias(alias)}
-              onTest={connections.length > 0 ? () => handleTestModel(id) : undefined}
+              onTest={canTestModels ? () => handleTestModel(id) : undefined}
               testStatus={modelTestResults[id]}
               isTesting={testingModelId === id}
+              isTestDisabled={isTestingAll || testingModelId === id}
             />
           ))}
         </div>
