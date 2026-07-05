@@ -1,5 +1,11 @@
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings } from "@/lib/localDb";
+import { checkApiKeyUsageLimit } from "@/lib/usageDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
+import {
+  recordAntigravityAccountSuccess,
+  recordAntigravityAuthFailure,
+  recordAntigravityQuotaFailure,
+} from "@/lib/accountPool/antigravityPool.js";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
@@ -7,6 +13,41 @@ import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
+
+const ANTIGRAVITY_POOL_FIELDS = [
+  "rateLimitedUntil",
+  "authCooldownUntil",
+  "modelCooldowns",
+  "consecutiveStrikes",
+  "modelStrikes",
+  "lastUsedAt",
+  "lastPoolError",
+  "lastPoolErrorAt",
+];
+
+function pickAntigravityPoolFields(connection) {
+  return Object.fromEntries(ANTIGRAVITY_POOL_FIELDS.map((key) => [key, connection[key]]));
+}
+
+function isAntigravityAccountPoolEnabled(settings) {
+  return settings?.antigravityAccountPoolEnabled === true;
+}
+
+async function persistAntigravityPoolUpdate(connection, updater) {
+  if (!connection?.id || connection.provider !== "antigravity") return;
+  const settings = await getSettings();
+  if (!isAntigravityAccountPoolEnabled(settings)) return;
+  const next = updater(connection, settings);
+  await updateProviderConnection(connection.id, pickAntigravityPoolFields(next));
+}
+
+function isAntigravityQuotaStatus(status) {
+  return status === 429 || status === 503;
+}
+
+function isAntigravityAuthStatus(status) {
+  return status === 401 || status === 403;
+}
 
 /**
  * Get provider credentials from localDb
@@ -206,6 +247,12 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
 
+  if (provider === "antigravity" && conn && isAntigravityQuotaStatus(status)) {
+    await persistAntigravityPoolUpdate(conn, (connection, settings) => recordAntigravityQuotaFailure(connection, { settings, model, statusCode: status }));
+  } else if (provider === "antigravity" && conn && isAntigravityAuthStatus(status)) {
+    await persistAntigravityPoolUpdate(conn, (connection, settings) => recordAntigravityAuthFailure(connection, { settings, statusCode: status }));
+  }
+
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
   let shouldFallback, cooldownMs, newBackoffLevel;
   if (resetsAtMs && resetsAtMs > Date.now()) {
@@ -252,6 +299,9 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 export async function clearAccountError(connectionId, currentConnection, model = null) {
   if (!connectionId || connectionId === "noauth") return;
   const conn = currentConnection._connection || currentConnection;
+  if (conn?.provider === "antigravity") {
+    await persistAntigravityPoolUpdate(conn, (connection) => recordAntigravityAccountSuccess(connection, { model }));
+  }
   const now = Date.now();
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));
 
@@ -308,5 +358,24 @@ export function extractApiKey(request) {
  */
 export async function isValidApiKey(apiKey) {
   if (!apiKey) return false;
-  return await validateApiKey(apiKey);
+  const result = await getApiKeyAuthResult(apiKey);
+  return result.valid;
+}
+
+export async function getApiKeyAuthResult(apiKey) {
+  if (!apiKey) return { valid: false, status: 401, message: "Missing API key" };
+  const valid = await validateApiKey(apiKey);
+  if (!valid) return { valid: false, status: 401, message: "Invalid API key" };
+
+  const limit = await checkApiKeyUsageLimit(apiKey);
+  if (!limit.allowed) {
+    return {
+      valid: false,
+      status: limit.status || 429,
+      message: limit.reason || "API key usage limit exceeded",
+      limitType: limit.limitType,
+    };
+  }
+
+  return { valid: true };
 }
