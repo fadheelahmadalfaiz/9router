@@ -17,6 +17,16 @@ import EndpointRow from "./components/EndpointRow";
 import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
+import {
+  LIMIT_FIELD_CONFIG,
+  buildLimitsPayload,
+  createLimitFormValues,
+  formatLimitStatus,
+  formatLimitUsageValue,
+  getInvalidLimitField,
+  getLimitSummary,
+} from "./endpointLimitHelpers";
+
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -24,6 +34,12 @@ export default function APIPageClient({ machineId }) {
   const [newKeyName, setNewKeyName] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+  const [limitModalKey, setLimitModalKey] = useState(null);
+  const [limitFormValues, setLimitFormValues] = useState(createLimitFormValues(null));
+  const [limitUsage, setLimitUsage] = useState(null);
+  const [limitUsageLoading, setLimitUsageLoading] = useState(false);
+  const [limitSaving, setLimitSaving] = useState(false);
+  const [limitError, setLimitError] = useState("");
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -667,6 +683,74 @@ export default function APIPageClient({ machineId }) {
     }
   };
 
+  const openLimitModal = async (key) => {
+    setLimitModalKey(key);
+    setLimitFormValues(createLimitFormValues(key.limits));
+    setLimitUsage(null);
+    setLimitError("");
+    setLimitUsageLoading(true);
+
+    try {
+      const res = await fetch(`/api/keys/${key.id}/usage`, { cache: "no-store" });
+      const data = await res.json();
+      if (res.ok) {
+        setLimitUsage(data.usage || null);
+      } else {
+        setLimitError(data.error || "Failed to load usage");
+      }
+    } catch (error) {
+      setLimitError(error.message || "Failed to load usage");
+    } finally {
+      setLimitUsageLoading(false);
+    }
+  };
+
+  const closeLimitModal = () => {
+    if (limitSaving) return;
+    setLimitModalKey(null);
+    setLimitFormValues(createLimitFormValues(null));
+    setLimitUsage(null);
+    setLimitError("");
+  };
+
+  const handleLimitValueChange = (field, value) => {
+    setLimitFormValues((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleSaveLimits = async () => {
+    if (!limitModalKey) return;
+    const invalidField = getInvalidLimitField(limitFormValues);
+    if (invalidField) {
+      const config = LIMIT_FIELD_CONFIG.find((fieldConfig) => fieldConfig.field === invalidField);
+      setLimitError(`${config?.label || "Limit"} must be blank or a positive number.`);
+      return;
+    }
+
+    setLimitSaving(true);
+    setLimitError("");
+    try {
+      const res = await fetch(`/api/keys/${limitModalKey.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limits: buildLimitsPayload(limitFormValues) }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setLimitError(data.error || "Failed to save limits");
+        return;
+      }
+      setKeys((prev) => prev.map((key) => key.id === limitModalKey.id ? data.key : key));
+      setLimitModalKey(null);
+      setLimitFormValues(createLimitFormValues(null));
+      setLimitUsage(null);
+      setLimitError("");
+    } catch (error) {
+      setLimitError(error.message || "Failed to save limits");
+    } finally {
+      setLimitSaving(false);
+    }
+  };
+
   const maskKey = (fullKey) => {
     if (!fullKey || fullKey.length <= 10) return fullKey || "";
     return fullKey.slice(0, 6) + "•".repeat(fullKey.length - 10) + fullKey.slice(-4);
@@ -1006,6 +1090,7 @@ export default function APIPageClient({ machineId }) {
                     <button
                       onClick={() => toggleKeyVisibility(key.id)}
                       className="min-h-6 min-w-6 shrink-0 p-1 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all"
+                      aria-label={visibleKeys.has(key.id) ? `Hide API key for ${key.name}` : `Show API key for ${key.name}`}
                       title={visibleKeys.has(key.id) ? "Hide key" : "Show key"}
                     >
                       <span className="material-symbols-outlined text-[14px]">
@@ -1015,6 +1100,8 @@ export default function APIPageClient({ machineId }) {
                     <button
                       onClick={() => copy(key.key, key.id)}
                       className="min-h-6 min-w-6 shrink-0 p-1 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all"
+                      aria-label={`Copy API key for ${key.name}`}
+                      title="Copy key"
                     >
                       <span className="material-symbols-outlined text-[14px]">
                         {copied === key.id ? "check" : "content_copy"}
@@ -1024,11 +1111,22 @@ export default function APIPageClient({ machineId }) {
                   <p className="text-xs text-text-muted mt-1">
                     Created {new Date(key.createdAt).toLocaleDateString()}
                   </p>
+                  <p className="text-xs text-text-muted mt-1">
+                    Limits: {getLimitSummary(key.limits)}
+                  </p>
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}
                 </div>
                 <div className="flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto">
+                  <button
+                    onClick={() => openLimitModal(key)}
+                    className="min-h-8 min-w-8 shrink-0 p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all"
+                    aria-label={`Manage usage limits for ${key.name}`}
+                    title="Manage usage limits"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">speed</span>
+                  </button>
                   <Toggle
                     size="sm"
                     checked={key.isActive ?? true}
@@ -1051,6 +1149,8 @@ export default function APIPageClient({ machineId }) {
                   <button
                     onClick={() => handleDeleteKey(key.id)}
                     className="min-h-8 min-w-8 shrink-0 p-2 hover:bg-red-500/10 rounded text-red-500 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all"
+                    aria-label={`Delete API key ${key.name}`}
+                    title="Delete key"
                   >
                     <span className="material-symbols-outlined text-[18px]">delete</span>
                   </button>
@@ -1127,6 +1227,99 @@ export default function APIPageClient({ machineId }) {
           <Button onClick={() => setCreatedKey(null)} fullWidth>
             Done
           </Button>
+        </div>
+      </Modal>
+
+      {/* Usage Limits Modal */}
+      <Modal
+        isOpen={!!limitModalKey}
+        title={limitModalKey ? `Usage Limits: ${limitModalKey.name}` : "Usage Limits"}
+        onClose={closeLimitModal}
+        size="lg"
+      >
+        <div className="flex flex-col gap-4">
+          <div className="rounded-lg border border-border-subtle bg-surface-2 p-4">
+            <p className="text-sm font-medium text-text-main">Custom limits are optional</p>
+            <p className="mt-1 text-sm text-text-muted">
+              Leave all fields blank for unlimited usage. Requests are rejected when a configured limit is reached.
+            </p>
+          </div>
+
+          <div className="rounded-lg border border-border-subtle p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-sm font-medium text-text-main">Current usage</p>
+              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                limitUsage?.status === "blocked"
+                  ? "bg-red-500/10 text-red-500"
+                  : limitUsage?.status === "warning"
+                    ? "bg-orange-500/10 text-orange-500"
+                    : "bg-primary/10 text-primary"
+              }`}>
+                {limitUsageLoading ? "Loading…" : formatLimitStatus(limitUsage?.status)}
+              </span>
+            </div>
+            {limitUsageLoading ? (
+              <p className="text-sm text-text-muted">Loading usage…</p>
+            ) : limitUsage ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                {LIMIT_FIELD_CONFIG.map(({ field, label, metric }) => (
+                  <div key={field} className="rounded-lg bg-surface-2 p-3">
+                    <p className="text-xs text-text-muted">{label}</p>
+                    <p className="mt-1 font-mono text-sm text-text-main">
+                      {formatLimitUsageValue(limitUsage.usage?.[field], metric)}
+                      {Number(limitUsage.limits?.[field]) > 0 && (
+                        <span className="text-text-muted"> / {formatLimitUsageValue(limitUsage.limits[field], metric)}</span>
+                      )}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-text-muted">Usage could not be loaded. You can still save limits.</p>
+            )}
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            {LIMIT_FIELD_CONFIG.map(({ field, label, metric, placeholder, hint }) => (
+              <Input
+                key={field}
+                label={label}
+                name={field}
+                type="number"
+                min="0"
+                step={metric === "cost" ? "0.0001" : "1"}
+                inputMode={metric === "cost" ? "decimal" : "numeric"}
+                value={limitFormValues[field]}
+                onChange={(event) => handleLimitValueChange(field, event.target.value)}
+                placeholder={placeholder}
+                hint={hint}
+              />
+            ))}
+          </div>
+
+          {limitError && (
+            <p className="text-sm text-red-500 flex items-center gap-1" role="alert">
+              <span className="material-symbols-outlined text-[16px]">error</span>
+              {limitError}
+            </p>
+          )}
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button onClick={handleSaveLimits} fullWidth loading={limitSaving}>
+              Save limits
+            </Button>
+            <Button
+              onClick={() => setLimitFormValues(createLimitFormValues(null))}
+              variant="ghost"
+              fullWidth
+              disabled={limitSaving}
+            >
+              Remove limits
+            </Button>
+            <Button onClick={closeLimitModal} variant="ghost" fullWidth disabled={limitSaving}>
+              Cancel
+            </Button>
+          </div>
         </div>
       </Modal>
 

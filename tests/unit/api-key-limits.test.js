@@ -45,6 +45,45 @@ afterEach(() => {
 });
 
 describe("API key opt-in usage limits", () => {
+  it("builds blank limit form values when no limits exist", async () => {
+    const { createLimitFormValues } = await import("@/app/(dashboard)/dashboard/endpoint/endpointLimitHelpers.js");
+
+    const values = createLimitFormValues(null);
+
+    expect(values).toEqual({
+      inputTokens5h: "",
+      inputTokens24h: "",
+      cost5h: "",
+      cost24h: "",
+    });
+  });
+
+  it("builds null limits payload when every field is blank", async () => {
+    const { buildLimitsPayload } = await import("@/app/(dashboard)/dashboard/endpoint/endpointLimitHelpers.js");
+
+    const payload = buildLimitsPayload({ inputTokens5h: "", inputTokens24h: " ", cost5h: "", cost24h: "" });
+
+    expect(payload).toBeNull();
+  });
+
+  it("builds numeric limit payloads and clears blank fields", async () => {
+    const { buildLimitsPayload } = await import("@/app/(dashboard)/dashboard/endpoint/endpointLimitHelpers.js");
+
+    const payload = buildLimitsPayload({ inputTokens5h: "1000", inputTokens24h: "", cost5h: "0.25", cost24h: "" });
+
+    expect(payload).toEqual({ inputTokens5h: 1000, inputTokens24h: null, cost5h: 0.25, cost24h: null });
+  });
+
+  it("summarizes configured fixed limits", async () => {
+    const { getLimitSummary } = await import("@/app/(dashboard)/dashboard/endpoint/endpointLimitHelpers.js");
+
+    const summary = getLimitSummary({ inputTokens5h: 1000, cost24h: 2 });
+
+    expect(summary).toContain("5h input tokens");
+    expect(summary).toContain("24h cost");
+    expect(getLimitSummary(null)).toBe("Unlimited");
+  });
+
   it("keeps new API keys unlimited by default", async () => {
     const key = await createKey("default-unlimited");
 
@@ -87,6 +126,43 @@ describe("API key opt-in usage limits", () => {
 
     expect(response.status).toBe(200);
     expect(body.key.limits).toEqual({ inputTokens5h: 75 });
+  });
+
+  it("clears limits through the API key update route", async () => {
+    const key = await createKey("clear-route-key");
+    await db.updateApiKey(key.id, { limits: { inputTokens5h: 75, cost24h: 1 } });
+    const { PUT } = await import("@/app/api/keys/[id]/route.js");
+
+    const request = new Request("http://localhost/api/keys/clear-route-key", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ limits: null }),
+    });
+    const response = await PUT(request, { params: Promise.resolve({ id: key.id }) });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.key.limits).toBeNull();
+  });
+
+  it("returns usage summary through the API key usage route", async () => {
+    const key = await createKey("usage-route-key");
+    await db.updateApiKey(key.id, { limits: { inputTokens24h: 100 } });
+    await saveUsage(key.key, 40);
+    const { GET } = await import("@/app/api/keys/[id]/usage/route.js");
+
+    const response = await GET(new Request("http://localhost/api/keys/usage-route-key/usage"), {
+      params: Promise.resolve({ id: key.id }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.usage.status).toBe("ok");
+    expect(body.usage.limits).toEqual({ inputTokens24h: 100 });
+    expect(body.usage.usage.inputTokens24h).toBe(40);
+    expect(body.usage.usage.inputTokens5h).toBe(40);
+    expect(body.usage.usage.cost24h).toBeGreaterThan(0);
+    expect(body.usage.usage.cost5h).toBeGreaterThan(0);
   });
 
   it("reports usage by API key without exposing raw keys", async () => {
