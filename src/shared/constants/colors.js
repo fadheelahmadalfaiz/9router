@@ -1,22 +1,23 @@
 // 9Router color palette
-// Light theme: warm neutral surfaces with route-blue primary
-// Dark theme: deep neutral surfaces with copper secondary accent
+// Light theme: warm neutral surfaces with citron primary
+// Dark theme: deep neutral surfaces with violet secondary accent
 
 export const COLORS = {
-  // Primary - route blue (#023957)
+  // Primary - citron (#c4bf1f)
   primary: {
-    DEFAULT: "#023957",
-    hover: "#022F49",
-    light: "#5D8EA8",
-    dark: "#011A28",
+    DEFAULT: "#c4bf1f",
+    hover: "#9d9919",
+    light: "#d9d23c",
+    dark: "#4f4d0d",
   },
 
-  // Secondary - warm complementary copper accent
+  // Secondary - violet companion with accessible contrast
   secondary: {
-    DEFAULT: "#D98A35",
-    hover: "#B96F24",
-    light: "#F1B25E",
-    dark: "#653A17",
+    DEFAULT: "#2b245e",
+    hover: "#423883",
+    light: "#8c7cf7",
+    lightHover: "#b8afff",
+    dark: "#1d1845",
   },
 
   // Light theme backgrounds
@@ -75,9 +76,9 @@ export const CSS_VARIABLES = {
   },
   dark: {
     "--color-primary": COLORS.primary.DEFAULT,
-    "--color-primary-hover": COLORS.primary.hover,
-    "--color-secondary": COLORS.secondary.DEFAULT,
-    "--color-secondary-hover": COLORS.secondary.light,
+    "--color-primary-hover": COLORS.primary.light,
+    "--color-secondary": COLORS.secondary.light,
+    "--color-secondary-hover": COLORS.secondary.lightHover,
     "--color-bg": COLORS.dark.bg,
     "--color-bg-alt": COLORS.dark.bgAlt,
     "--color-surface": COLORS.dark.surface,
