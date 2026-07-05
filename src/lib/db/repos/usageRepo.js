@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
+import { API_KEY_LIMIT_FIELDS, formatLimitDuration } from "../../apiKeyLimits.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -13,6 +14,12 @@ const PENDING_TIMEOUT_MS = 60 * 1000;
 const RING_CAP = 50;
 const CONN_CACHE_TTL_MS = 30 * 1000;
 const PERIOD_MS = { "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
+const LIMIT_WINDOW_MS = {
+  inputTokens5h: 5 * 60 * 60 * 1000,
+  inputTokens24h: 24 * 60 * 60 * 1000,
+  cost5h: 5 * 60 * 60 * 1000,
+  cost24h: 24 * 60 * 60 * 1000,
+};
 
 // In-memory state shared across Next.js modules
 if (!global._pendingRequests) global._pendingRequests = { byModel: {}, byAccount: {} };
@@ -332,6 +339,235 @@ export async function getUsageHistory(filter = {}) {
     connectionId: r.connectionId, apiKeyMasked: maskApiKey(r.apiKey), endpoint: r.endpoint,
     cost: r.cost, status: r.status, tokens: parseJson(r.tokens, {}),
   }));
+}
+
+function sumApiKeyUsage(db, apiKeyValue, windowMs = null) {
+  const params = [apiKeyValue];
+  let timeClause = "";
+  if (windowMs) {
+    timeClause = " AND timestamp >= ?";
+    params.push(new Date(Date.now() - windowMs).toISOString());
+  }
+  return db.get(
+    `SELECT COUNT(*) AS requests,
+            COALESCE(SUM(promptTokens), 0) AS inputTokens,
+            COALESCE(SUM(completionTokens), 0) AS outputTokens,
+            COALESCE(SUM(cost), 0) AS cost
+       FROM usageHistory
+      WHERE apiKey = ?${timeClause}`,
+    params,
+  ) || { requests: 0, inputTokens: 0, outputTokens: 0, cost: 0 };
+}
+
+function getApiKeyLimitChecks(summary) {
+  const { usage, windowUsage, limits } = summary;
+  if (!limits || typeof limits !== "object") return [];
+
+  const checks = [];
+  for (const field of API_KEY_LIMIT_FIELDS) {
+    const limit = Number(limits[field]);
+    if (!Number.isFinite(limit) || limit <= 0) continue;
+    const current = field.startsWith("inputTokens") ? usage[field] : usage[field];
+    checks.push({
+      field,
+      label: field.includes("5h") ? "5h" : "24h",
+      current: Number(current) || 0,
+      limit,
+      metric: field.startsWith("cost") ? "cost" : "input tokens",
+    });
+  }
+
+  for (const window of limits.windows || []) {
+    const durationMs = Number(window.durationMs);
+    if (!Number.isFinite(durationMs) || durationMs <= 0) continue;
+    const label = window.label || formatLimitDuration(durationMs);
+    const inputLimit = Number(window.inputTokens);
+    if (Number.isFinite(inputLimit) && inputLimit > 0) {
+      checks.push({
+        field: `window_${durationMs}_inputTokens`,
+        label,
+        current: Number(windowUsage[`tokens_${durationMs}`]) || 0,
+        limit: inputLimit,
+        metric: "input tokens",
+      });
+    }
+    const costLimit = Number(window.cost);
+    if (Number.isFinite(costLimit) && costLimit > 0) {
+      checks.push({
+        field: `window_${durationMs}_cost`,
+        label,
+        current: Number(windowUsage[`cost_${durationMs}`]) || 0,
+        limit: costLimit,
+        metric: "cost",
+      });
+    }
+  }
+
+  return checks;
+}
+
+function formatLimitValue(value, metric) {
+  return metric === "cost" ? `$${Number(value).toFixed(4)}` : `${Number(value).toLocaleString()} tokens`;
+}
+
+export function getApiKeyLimitStatus(summary) {
+  const checks = getApiKeyLimitChecks(summary);
+  if (checks.length === 0) return "unlimited";
+  if (checks.some((check) => check.current >= check.limit)) return "blocked";
+  if (checks.some((check) => check.current / check.limit >= 0.8)) return "warning";
+  return "ok";
+}
+
+export async function getApiKeyUsageSummary(apiKeyValue) {
+  const db = await getAdapter();
+  const keyRow = db.get(`SELECT id, name, limits FROM apiKeys WHERE key = ?`, [apiKeyValue]);
+  if (!keyRow) return null;
+
+  const limits = parseJson(keyRow.limits, null);
+  const usage5h = sumApiKeyUsage(db, apiKeyValue, LIMIT_WINDOW_MS.inputTokens5h);
+  const usage24h = sumApiKeyUsage(db, apiKeyValue, LIMIT_WINDOW_MS.inputTokens24h);
+  const usage = {
+    inputTokens5h: usage5h.inputTokens || 0,
+    inputTokens24h: usage24h.inputTokens || 0,
+    cost5h: usage5h.cost || 0,
+    cost24h: usage24h.cost || 0,
+  };
+  const windowUsage = {};
+
+  for (const window of limits?.windows || []) {
+    const durationMs = Number(window.durationMs);
+    if (!Number.isFinite(durationMs) || durationMs <= 0) continue;
+    const windowSum = sumApiKeyUsage(db, apiKeyValue, durationMs);
+    windowUsage[`tokens_${durationMs}`] = windowSum.inputTokens || 0;
+    windowUsage[`cost_${durationMs}`] = windowSum.cost || 0;
+  }
+
+  const summary = { keyId: keyRow.id, keyName: keyRow.name, usage, windowUsage, limits };
+  return { ...summary, status: getApiKeyLimitStatus(summary) };
+}
+
+export async function checkApiKeyUsageLimit(apiKeyValue) {
+  if (!apiKeyValue) return { allowed: true };
+  const summary = await getApiKeyUsageSummary(apiKeyValue);
+  if (!summary || !summary.limits) return { allowed: true };
+
+  const blocked = getApiKeyLimitChecks(summary).find((check) => check.current >= check.limit);
+  if (!blocked) return { allowed: true, usage: summary.usage, limits: summary.limits };
+
+  return {
+    allowed: false,
+    status: 429,
+    reason: `API key "${summary.keyName || summary.keyId}" exceeded ${blocked.label} ${blocked.metric} limit (${formatLimitValue(blocked.current, blocked.metric)} / ${formatLimitValue(blocked.limit, blocked.metric)})`,
+    limitType: blocked.field,
+    usage: summary.usage,
+    limits: summary.limits,
+  };
+}
+
+function addReportTotals(target, row) {
+  const tokens = parseJson(row.tokens, {}) || {};
+  const cachedTokens = tokens.cached_tokens || tokens.cache_read_input_tokens || 0;
+  target.requests += 1;
+  target.inputTokens += row.promptTokens || 0;
+  target.outputTokens += row.completionTokens || 0;
+  target.cachedTokens += cachedTokens;
+  target.totalTokens += (row.promptTokens || 0) + (row.completionTokens || 0);
+  target.cost += row.cost || 0;
+}
+
+function makeReportTotals() {
+  return { requests: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 0, cost: 0 };
+}
+
+function getReportPeriodBounds(filters) {
+  if (filters.period === "custom") {
+    return { startDate: filters.startDate, endDate: filters.endDate };
+  }
+  if (!filters.period || filters.period === "all") return {};
+  const duration = PERIOD_MS[filters.period];
+  return duration ? { startDate: new Date(Date.now() - duration).toISOString() } : {};
+}
+
+function reportTimeKey(timestamp, interval = "day") {
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return "unknown";
+  if (interval === "hour") return date.toISOString().slice(0, 13) + ":00:00.000Z";
+  if (interval === "month") return date.toISOString().slice(0, 7);
+  if (interval === "week") {
+    const week = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    week.setUTCDate(week.getUTCDate() - week.getUTCDay());
+    return week.toISOString().slice(0, 10);
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+export async function getApiKeyUsageReport(filters = {}) {
+  const db = await getAdapter();
+  const apiKeyRows = db.all(`SELECT id, key, name FROM apiKeys`);
+  const keyByValue = Object.fromEntries(apiKeyRows.map((key) => [key.key, key]));
+  const valueById = Object.fromEntries(apiKeyRows.map((key) => [key.id, key.key]));
+  const conditions = [];
+  const params = [];
+  const bounds = getReportPeriodBounds(filters);
+
+  if (bounds.startDate) { conditions.push("timestamp >= ?"); params.push(new Date(bounds.startDate).toISOString()); }
+  if (bounds.endDate) { conditions.push("timestamp <= ?"); params.push(new Date(bounds.endDate).toISOString()); }
+  if (filters.providers?.length) {
+    conditions.push(`provider IN (${filters.providers.map(() => "?").join(", ")})`);
+    params.push(...filters.providers);
+  }
+  if (filters.models?.length) {
+    conditions.push(`model IN (${filters.models.map(() => "?").join(", ")})`);
+    params.push(...filters.models);
+  }
+  if (filters.apiKeyIds?.length) {
+    const apiKeyValues = filters.apiKeyIds.map((id) => valueById[id]).filter(Boolean);
+    if (apiKeyValues.length === 0) return { filters, totals: makeReportTotals(), groups: [] };
+    conditions.push(`apiKey IN (${apiKeyValues.map(() => "?").join(", ")})`);
+    params.push(...apiKeyValues);
+  }
+
+  const rows = db.all(
+    `SELECT timestamp, provider, model, apiKey, endpoint, promptTokens, completionTokens, cost, tokens
+       FROM usageHistory${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""}
+      ORDER BY timestamp ASC`,
+    params,
+  );
+  const totals = makeReportTotals();
+  const groupBy = filters.groupBy || "apiKey";
+  const groups = new Map();
+
+  for (const row of rows) {
+    addReportTotals(totals, row);
+    const keyInfo = row.apiKey ? keyByValue[row.apiKey] : null;
+    let groupKey = "unknown";
+    let label = "Unknown";
+    if (groupBy === "model") {
+      groupKey = row.model || "unknown";
+      label = groupKey;
+    } else if (groupBy === "provider") {
+      groupKey = row.provider || "unknown";
+      label = groupKey;
+    } else if (groupBy === "time") {
+      groupKey = reportTimeKey(row.timestamp, filters.interval || "day");
+      label = groupKey;
+    } else {
+      groupKey = keyInfo?.id || (row.apiKey ? maskApiKey(row.apiKey) : "local-no-key");
+      label = keyInfo?.name || (row.apiKey ? maskApiKey(row.apiKey) : "Local (No API Key)");
+    }
+
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, { key: groupKey, label, totals: makeReportTotals() });
+    }
+    addReportTotals(groups.get(groupKey).totals, row);
+  }
+
+  return {
+    filters,
+    totals,
+    groups: [...groups.values()].sort((a, b) => b.totals.requests - a.totals.requests),
+    generatedAt: new Date().toISOString(),
+  };
 }
 
 function loadDaysInRange(adapter, maxDays) {

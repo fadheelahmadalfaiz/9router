@@ -3,5 +3,6 @@ export {
   statsEmitter, trackPendingRequest, getActiveRequests,
   saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
   appendRequestLog, getRecentLogs,
+  getApiKeyUsageSummary, checkApiKeyUsageLimit, getApiKeyUsageReport,
   saveRequestDetail, getRequestDetails, getRequestDetailById,
 } from "@/lib/db/index.js";
