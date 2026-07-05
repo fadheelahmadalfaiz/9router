@@ -12,6 +12,7 @@ import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
+import { runSerialModelTests } from "@/shared/utils/serialModelTests";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
@@ -30,6 +31,17 @@ const AUTO_PING_SETTINGS_KEYS = {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createInitialModelAutoTestProgress() {
+  return {
+    total: 0,
+    completed: 0,
+    passed: 0,
+    failed: 0,
+    stopped: false,
+    currentModelId: null,
+  };
 }
 
 export default function ProviderDetailPage() {
@@ -56,6 +68,9 @@ export default function ProviderDetailPage() {
   const [modelTestResults, setModelTestResults] = useState({});
   const [modelsTestError, setModelsTestError] = useState("");
   const [testingModelIds, setTestingModelIds] = useState(() => new Set());
+  const [autoTestingModels, setAutoTestingModels] = useState(false);
+  const [autoTestProgress, setAutoTestProgress] = useState(createInitialModelAutoTestProgress);
+  const autoTestAbortRef = useRef(null);
   const [showAddCustomModel, setShowAddCustomModel] = useState(false);
   const [selectedConnectionIds, setSelectedConnectionIds] = useState([]);
   const [bulkProxyPoolId, setBulkProxyPoolId] = useState("__none__");
@@ -414,10 +429,12 @@ export default function ProviderDetailPage() {
   };
 
   useEffect(() => {
-    fetchConnections();
-    fetchAliases();
-    fetchCustomModels();
-    fetchDisabledModels();
+    void Promise.resolve().then(() => {
+      fetchConnections();
+      fetchAliases();
+      fetchCustomModels();
+      fetchDisabledModels();
+    });
   }, [fetchConnections, fetchAliases, fetchCustomModels, fetchDisabledModels]);
 
   // Fetch suggested models from provider's public API (if configured)
@@ -637,6 +654,33 @@ export default function ProviderDetailPage() {
     setOneByOneStopping(true);
   };
 
+  const getNonCompatibleLlmModelRows = () => {
+    const allModels = [
+      ...models,
+      ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
+    ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; });
+    const disabledSet = new Set(disabledModelIds);
+    const displayModels = allModels.filter((m) => !disabledSet.has(m.id));
+    const disabledDisplayModels = allModels.filter((m) => disabledSet.has(m.id));
+    const customModelRows = getProviderCustomModelRows({
+      customModels,
+      modelAliases,
+      providerAlias: providerStorageAlias,
+      builtInModels: models,
+      type: "llm",
+    });
+    const testableModels = [];
+    const seenIds = new Set();
+
+    for (const model of [...customModelRows, ...displayModels]) {
+      if (!model.id || seenIds.has(model.id)) continue;
+      seenIds.add(model.id);
+      testableModels.push({ id: model.id });
+    }
+
+    return { displayModels, disabledDisplayModels, customModelRows, testableModels };
+  };
+
   const handleDelete = async (id) => {
     setConfirmState({
       title: "Delete Connection",
@@ -776,7 +820,9 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const selectedConnections = connections.filter((conn) => selectedConnectionIds.includes(conn.id));
+  const connectionIds = new Set(connections.map((conn) => conn.id));
+  const validSelectedConnectionIds = selectedConnectionIds.filter((id) => connectionIds.has(id));
+  const selectedConnections = connections.filter((conn) => validSelectedConnectionIds.includes(conn.id));
   const allSelected = connections.length > 0 && selectedConnectionIds.length === connections.length;
 
   const toggleSelectConnection = (connectionId) => {
@@ -799,10 +845,6 @@ export default function ProviderDetailPage() {
     setSelectedConnectionIds([]);
     setBulkProxyPoolId("__none__");
   };
-
-  useEffect(() => {
-    setSelectedConnectionIds((prev) => prev.filter((id) => connections.some((conn) => conn.id === id)));
-  }, [connections]);
 
   const selectedProxySummary = (() => {
     if (selectedConnections.length === 0) return "";
@@ -985,7 +1027,7 @@ export default function ProviderDetailPage() {
   );
 
   const handleTestModel = async (modelId) => {
-    if (testingModelIds.has(modelId)) return;
+    if (testingModelIds.has(modelId) || autoTestingModels) return;
     setTestingModelIds((prev) => new Set(prev).add(modelId));
     try {
       const res = await fetch("/api/models/test", {
@@ -1002,6 +1044,81 @@ export default function ProviderDetailPage() {
     } finally {
       setTestingModelIds((prev) => { const n = new Set(prev); n.delete(modelId); return n; });
     }
+  };
+
+  const testOneAvailableModel = async (modelId, { signal } = {}) => {
+    const res = await fetch("/api/models/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: `${providerStorageAlias}/${modelId}` }),
+      signal,
+    });
+    return res.json();
+  };
+
+  const handleAutoTestAvailableModels = async () => {
+    if (autoTestingModels || testingModelIds.size > 0 || isCompatible) return;
+
+    const { testableModels } = getNonCompatibleLlmModelRows();
+    if (testableModels.length === 0) return;
+
+    const controller = new AbortController();
+    autoTestAbortRef.current = controller;
+    setAutoTestingModels(true);
+    setModelsTestError("");
+    setAutoTestProgress({ ...createInitialModelAutoTestProgress(), total: testableModels.length });
+    setModelTestResults((prev) => {
+      const next = { ...prev };
+      for (const model of testableModels) delete next[model.id];
+      return next;
+    });
+
+    try {
+      const outcome = await runSerialModelTests(
+        testableModels,
+        (model, options) => testOneAvailableModel(model.id, options),
+        {
+          onStart: (model) => {
+            setTestingModelIds(new Set([model.id]));
+            setAutoTestProgress((prev) => ({ ...prev, currentModelId: model.id }));
+          },
+          onResult: (entry) => {
+            setModelTestResults((prev) => ({ ...prev, [entry.id]: entry.status }));
+            setAutoTestProgress((prev) => ({
+              ...prev,
+              completed: prev.completed + 1,
+              passed: entry.status === "ok" ? prev.passed + 1 : prev.passed,
+              failed: entry.status === "error" ? prev.failed + 1 : prev.failed,
+            }));
+          },
+          onCancel: (results) => {
+            setAutoTestProgress((prev) => ({
+              ...prev,
+              completed: results.length,
+              passed: results.filter((entry) => entry.status === "ok").length,
+              failed: results.filter((entry) => entry.status === "error").length,
+              stopped: true,
+              currentModelId: null,
+            }));
+          },
+        },
+        controller.signal,
+      );
+
+      if (outcome.status === "complete") {
+        setAutoTestProgress((prev) => ({ ...prev, currentModelId: null }));
+      }
+    } finally {
+      if (autoTestAbortRef.current === controller) {
+        autoTestAbortRef.current = null;
+      }
+      setTestingModelIds(new Set());
+      setAutoTestingModels(false);
+    }
+  };
+
+  const handleStopAutoTestAvailableModels = () => {
+    autoTestAbortRef.current?.abort();
   };
 
   const renderModelsSection = () => {
@@ -1023,22 +1140,7 @@ export default function ProviderDetailPage() {
         />
       );
     }
-    // Combine hardcoded models with Kilo free models (deduplicated)
-    // Exclude non-llm models (embedding, tts, etc.) — they have dedicated pages under media-providers
-    const allModels = [
-      ...models,
-      ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
-    ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; });
-    const disabledSet = new Set(disabledModelIds);
-    const displayModels = allModels.filter((m) => !disabledSet.has(m.id));
-    const disabledDisplayModels = allModels.filter((m) => disabledSet.has(m.id));
-    const customModelRows = getProviderCustomModelRows({
-      customModels,
-      modelAliases,
-      providerAlias: providerStorageAlias,
-      builtInModels: models,
-      type: "llm",
-    });
+    const { displayModels, disabledDisplayModels, customModelRows } = getNonCompatibleLlmModelRows();
 
     return (
       <div className="flex flex-wrap gap-3">
@@ -1062,6 +1164,7 @@ export default function ProviderDetailPage() {
             testStatus={modelTestResults[model.id]}
             onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(model.id) : undefined}
             isTesting={testingModelIds.has(model.id)}
+            isTestDisabled={autoTestingModels}
             isCustom
             isFree={false}
             caps={getCaps(`${providerId}/${model.id}`)}
@@ -1087,6 +1190,7 @@ export default function ProviderDetailPage() {
               testStatus={modelTestResults[model.id]}
               onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(model.id) : undefined}
               isTesting={testingModelIds.has(model.id)}
+              isTestDisabled={autoTestingModels}
               isFree={model.isFree}
               onDisable={() => handleDisableModel(model.id)}
               caps={getCaps(`${providerId}/${model.id}`)}
@@ -1203,6 +1307,13 @@ export default function ProviderDetailPage() {
     }
     return `/providers/${providerInfo.id}.png`;
   };
+
+  const autoTestCurrentPosition = Math.min(autoTestProgress.completed + 1, autoTestProgress.total);
+  const autoTestProgressLabel = autoTestProgress.stopped
+    ? `Stopped after ${autoTestProgress.completed} of ${autoTestProgress.total}`
+    : autoTestingModels
+    ? `Testing ${autoTestCurrentPosition} of ${autoTestProgress.total}`
+    : `Completed ${autoTestProgress.completed} of ${autoTestProgress.total}`;
 
   return (
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:gap-8 sm:px-0">
@@ -1584,13 +1695,28 @@ export default function ProviderDetailPage() {
             {"Available Models"}
           </h2>
           {!isCompatible && (() => {
-            const allIds = [
-              ...models,
-              ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
-            ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; }).map((m) => m.id);
-            const activeIds = allIds.filter((id) => !disabledModelIds.includes(id));
+            const { displayModels, testableModels } = getNonCompatibleLlmModelRows();
+            const activeIds = displayModels.map((model) => model.id);
+            const canRunAutoTest = (connections.length > 0 || isFreeNoAuth) && testableModels.length > 0;
             return (
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
+                {canRunAutoTest && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon="science"
+                    onClick={handleAutoTestAvailableModels}
+                    disabled={autoTestingModels || testingModelIds.size > 0}
+                    loading={autoTestingModels}
+                  >
+                    {autoTestingModels ? "Testing..." : "Auto Test All"}
+                  </Button>
+                )}
+                {autoTestingModels && (
+                  <Button size="sm" variant="secondary" icon="stop_circle" onClick={handleStopAutoTestAvailableModels}>
+                    Stop
+                  </Button>
+                )}
                 {disabledModelIds.length > 0 && (
                   <Button size="sm" variant="secondary" icon="restart_alt" onClick={handleEnableAll}>
                     Active All
@@ -1607,6 +1733,23 @@ export default function ProviderDetailPage() {
         </div>
         {!!modelsTestError && (
           <p className="text-xs text-red-500 mb-3 break-words">{modelsTestError}</p>
+        )}
+        {!isCompatible && autoTestProgress.total > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs" role="status" aria-live="polite">
+            <span className="inline-flex items-center gap-1 font-semibold text-text-main">
+              <span className="material-symbols-outlined text-[16px]">
+                {autoTestProgress.stopped ? "stop_circle" : autoTestingModels ? "progress_activity" : "task_alt"}
+              </span>
+              {autoTestProgressLabel}
+            </span>
+            {autoTestProgress.currentModelId && (
+              <span className="min-w-0 truncate text-text-muted">
+                Current: <span className="font-mono text-text-main">{autoTestProgress.currentModelId}</span>
+              </span>
+            )}
+            <span className="text-green-600 dark:text-green-400">Passed: {autoTestProgress.passed}</span>
+            <span className="text-red-600 dark:text-red-400">Failed: {autoTestProgress.failed}</span>
+          </div>
         )}
         {renderModelsSection()}
       </Card>
