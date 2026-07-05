@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { deleteApiKey, getApiKeyById, updateApiKey } from "@/lib/localDb";
+import { normalizeApiKeyLimits } from "@/lib/apiKeyLimits";
 
 // GET /api/keys/[id] - Get single key
 export async function GET(request, { params }) {
@@ -21,7 +22,7 @@ export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
-    const { isActive } = body;
+    const { isActive, name } = body;
 
     const existing = await getApiKeyById(id);
     if (!existing) {
@@ -30,12 +31,19 @@ export async function PUT(request, { params }) {
 
     const updateData = {};
     if (isActive !== undefined) updateData.isActive = isActive;
+    if (name !== undefined) updateData.name = name;
+    if (Object.prototype.hasOwnProperty.call(body, "limits")) {
+      updateData.limits = normalizeApiKeyLimits(body.limits, existing.limits);
+    }
 
     const updated = await updateApiKey(id, updateData);
 
     return NextResponse.json({ key: updated });
   } catch (error) {
     console.log("Error updating key:", error);
+    if (error.message?.startsWith("limits") || error.message?.startsWith("Invalid")) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
     return NextResponse.json({ error: "Failed to update key" }, { status: 500 });
   }
 }
