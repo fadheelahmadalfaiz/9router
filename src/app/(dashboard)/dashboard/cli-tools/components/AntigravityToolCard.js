@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Card, Button, Badge, Modal, Input, ModelSelectModal } from "@/shared/components";
 import Image from "next/image";
+import AntigravityAccountPoolCard from "./AntigravityAccountPoolCard";
 
 export default function AntigravityToolCard({
   tool,
@@ -319,6 +320,8 @@ export default function AntigravityToolCard({
               <span>{message.text}</span>
             </div>
           )}
+
+          <AntigravityAccountPoolCard />
 
           {/* When running: API Key + Model Mappings */}
           {isRunning && (

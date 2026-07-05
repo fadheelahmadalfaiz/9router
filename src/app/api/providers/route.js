@@ -69,6 +69,7 @@ export async function GET() {
       return {
         ...c,
         name,
+        hasAccessToken: c.provider === "antigravity" ? Boolean(c.accessToken) : undefined,
         apiKey: undefined,
         accessToken: undefined,
         refreshToken: undefined,
