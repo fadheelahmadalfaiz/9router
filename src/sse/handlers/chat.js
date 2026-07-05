@@ -5,7 +5,7 @@ import {
   markAccountUnavailable,
   clearAccountError,
   extractApiKey,
-  isValidApiKey,
+  getApiKeyAuthResult,
 } from "../services/auth.js";
 import { cacheClaudeHeaders } from "open-sse/utils/claudeHeaderCache.js";
 import { getSettings } from "@/lib/localDb";
@@ -74,10 +74,10 @@ export async function handleChat(request, clientRawRequest = null) {
       log.warn("AUTH", "Missing API key (requireApiKey=true)");
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
     }
-    const valid = await isValidApiKey(apiKey);
-    if (!valid) {
-      log.warn("AUTH", "Invalid API key (requireApiKey=true)");
-      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
+    const authResult = await getApiKeyAuthResult(apiKey);
+    if (!authResult.valid) {
+      log.warn("AUTH", `${authResult.message} (requireApiKey=true)`);
+      return errorResponse(authResult.status, authResult.message);
     }
   }
 
@@ -204,8 +204,19 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
+  let attemptCount = 0;
+  const initialSettings = await getSettings();
+  const antigravityAccountPoolEnabled = provider === "antigravity" && initialSettings.antigravityAccountPoolEnabled === true;
+  const maxAttempts = antigravityAccountPoolEnabled
+    ? Math.max(1, Number(initialSettings.antigravity503RetryCount ?? 3) + 1)
+    : Number.POSITIVE_INFINITY;
 
   while (true) {
+    if (attemptCount >= maxAttempts) {
+      log.warn("CHAT", "Antigravity account-pool retry limit reached", { provider, model });
+      return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
+    }
+
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId });
 
     // All accounts unavailable
@@ -226,6 +237,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
     // Log account selection
     log.info("AUTH", `\x1b[32mUsing ${provider} account: ${credentials.connectionName}\x1b[0m`);
+    attemptCount += 1;
 
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
 
