@@ -1,5 +1,5 @@
 // Public API barrel — all DB functions
-import { getAdapter } from "./driver.js";
+import { closeAdapter, getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
 
 // Settings
@@ -168,4 +168,8 @@ export async function importDb(payload) {
 // Eager init helper (optional)
 export async function initDb() {
   await getAdapter();
+}
+
+export function closeDb() {
+  closeAdapter();
 }
