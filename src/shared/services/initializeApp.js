@@ -16,6 +16,7 @@ import {
 import { getMitmStatus, startMitm, loadEncryptedPassword, initDbHooks, restoreToolDNS, removeAllDNSEntriesSync } from "@/mitm/manager";
 import { startQuotaAutoPing } from "@/shared/services/quotaAutoPing";
 import { syncToJson as syncMitmAliasCache } from "@/lib/mitmAliasCache";
+import { syncAntigravityAccountPoolToJson } from "@/lib/antigravityAccountPoolCache";
 
 // Inject correct paths and DB hooks into manager.js (CJS) from ESM context
 (function bootstrapMitm() {
@@ -80,6 +81,7 @@ export async function initializeApp() {
 
     // Sync mitmAlias DB → JSON cache so standalone MITM server can read it
     syncMitmAliasCache().catch(() => {});
+    syncAntigravityAccountPoolToJson().catch(() => {});
 
     // Auto-respawn tunnel when cloudflared exits unexpectedly (e.g. network change drop)
     setTunnelUnexpectedExitCallback(() => {

@@ -3,6 +3,7 @@ import { getSettings, updateSettings } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import { runQuotaAutoPingTick } from "@/shared/services/quotaAutoPing";
+import { syncAntigravityAccountPoolToJson } from "@/lib/antigravityAccountPoolCache";
 import bcrypt from "bcryptjs";
 
 export const dynamic = "force-dynamic";
@@ -78,6 +79,19 @@ export async function PATCH(request) {
     }
 
     const settings = await updateSettings(body);
+    const antigravityPoolKeys = [
+      "antigravityAccountPoolEnabled",
+      "antigravityAccountPoolStrategy",
+      "antigravityCooldownStrikeThreshold",
+      "antigravityDefaultCooldownMs",
+      "antigravity503RetryCount",
+    ];
+
+    if (antigravityPoolKeys.some((key) => Object.prototype.hasOwnProperty.call(body, key))) {
+      syncAntigravityAccountPoolToJson().catch((error) => {
+        console.warn("[antigravityAccountPoolCache] settings-triggered sync failed:", error.message);
+      });
+    }
 
     // Apply outbound proxy settings immediately (no restart required)
     if (

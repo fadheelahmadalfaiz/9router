@@ -2,6 +2,13 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
+function syncAntigravityPoolCache(provider) {
+  if (provider !== "antigravity") return;
+  import("@/lib/antigravityAccountPoolCache")
+    .then(({ syncAntigravityAccountPoolToJson }) => syncAntigravityAccountPoolToJson())
+    .catch(() => {});
+}
+
 const OPTIONAL_FIELDS = [
   "displayName", "email", "globalPriority", "defaultModel",
   "accessToken", "refreshToken", "expiresAt", "tokenType",
@@ -166,6 +173,7 @@ export async function createProviderConnection(data) {
     result = conn;
   });
 
+  syncAntigravityPoolCache(result?.provider);
   return result;
 }
 
@@ -182,19 +190,23 @@ export async function updateProviderConnection(id, data) {
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
   });
+  syncAntigravityPoolCache(result?.provider);
   return result;
 }
 
 export async function deleteProviderConnection(id) {
   const db = await getAdapter();
   let ok = false;
+  let resultProvider = null;
   db.transaction(() => {
     const row = db.get(`SELECT provider FROM providerConnections WHERE id = ?`, [id]);
     if (!row) return;
     db.run(`DELETE FROM providerConnections WHERE id = ?`, [id]);
     reorderInTx(db, row.provider);
     ok = true;
+    resultProvider = row.provider;
   });
+  syncAntigravityPoolCache(resultProvider);
   return ok;
 }
 

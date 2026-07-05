@@ -1,6 +1,12 @@
 const { err, createResponseDumper } = require("../logger");
 const { IS_DEV } = require("../config");
 const { fetchRouter, pipeSSE } = require("./base");
+const { getAntigravityAccountPoolSelection } = require("../dbReader");
+
+function modelName(mappedModel) {
+  const parts = String(mappedModel || "").split("/");
+  return parts.length > 1 ? parts.slice(1).join("/") : mappedModel;
+}
 
 /**
  * Intercept Antigravity request — forward Gemini body as-is to /v1/chat/completions.
@@ -14,7 +20,11 @@ async function intercept(req, res, bodyBuffer, mappedModel) {
     const body = JSON.parse(bodyBuffer.toString());
     if (body.model) body.model = mappedModel;
 
-    const routerRes = await fetchRouter(body, "/v1/chat/completions", req.headers);
+    const selectedAccount = getAntigravityAccountPoolSelection(modelName(mappedModel));
+    const headers = selectedAccount
+      ? { ...req.headers, "x-connection-id": selectedAccount.id }
+      : req.headers;
+    const routerRes = await fetchRouter(body, "/v1/chat/completions", headers);
     await pipeSSE(routerRes, res, dumper);
   } catch (error) {
     err(`[antigravity] ${error.message}`);
