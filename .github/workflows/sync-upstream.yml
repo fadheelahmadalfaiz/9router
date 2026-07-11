@@ -53,17 +53,7 @@ jobs:
           node scripts/apply-custom-patches.mjs
 
           if ! git diff --quiet; then
-            git add \
-              src/app/api/providers/route.js \
-              src/shared/constants/config.js \
-              src/shared/constants/colors.js \
-              src/app/globals.css \
-              src/shared/utils/serialModelTests.js \
-              tests/unit/serialModelTests.test.js \
-              'src/app/(dashboard)/dashboard/providers/[id]/page.js' \
-              'src/app/(dashboard)/dashboard/providers/[id]/ModelRow.js' \
-              scripts/apply-custom-patches.mjs \
-              .github/workflows/sync-upstream.yml
+            git add src/app/api/providers/route.js scripts/apply-custom-patches.mjs .github/workflows/sync-upstream.yml
             git commit -m "feat: apply custom 9router patches"
           fi
 
