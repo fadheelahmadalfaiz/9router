@@ -18,4 +18,5 @@ export {
   getMitmAlias, setMitmAliasAll,
   getPricing, getPricingForModel, updatePricing, resetPricing, resetAllPricing,
   exportDb, importDb,
+  checkApiKeyUsageLimit,
 } from "@/lib/db/index.js";
