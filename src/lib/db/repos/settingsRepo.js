@@ -42,11 +42,10 @@ const DEFAULT_SETTINGS = {
   cavemanLevel: "full",
   ponytailEnabled: false,
   ponytailLevel: "full",
-  antigravityAccountPoolEnabled: false,
-  antigravityAccountPoolStrategy: "round-robin",
-  antigravityCooldownStrikeThreshold: 3,
-  antigravityDefaultCooldownMs: 2 * 60 * 1000,
-  antigravity503RetryCount: 3,
+  pxpipeEnabled: false,
+  pxpipeAutoInstall: true,
+  pxpipeMinChars: 25000,
+  pxpipeTimeoutMs: 15000,
 };
 
 async function readRaw() {

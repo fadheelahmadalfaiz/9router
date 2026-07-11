@@ -77,7 +77,4 @@ gitbook/README.md
 open-sse.old/
 .graphifyignore
 graphify-out/*
-
-# Local agent artifacts
-.omo/
-.opencode/
+.next-analyze/*
