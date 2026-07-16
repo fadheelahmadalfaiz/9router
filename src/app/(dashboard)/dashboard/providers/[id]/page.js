@@ -1833,6 +1833,7 @@ export default function ProviderDetailPage() {
         website={providerInfo?.website}
         proxyPools={proxyPools}
         error={addConnectionError}
+        existingNames={connections.map((c) => c.name).filter(Boolean)}
         onSave={handleSaveApiKey}
         onBulkDone={fetchConnections}
         onClose={() => {
