@@ -803,7 +803,7 @@ export async function testSingleConnection(id) {
   const connection = await getProviderConnectionById(id);
   if (!connection) return { valid: false, error: "Connection not found", latencyMs: 0, testedAt: new Date().toISOString() };
 
-  const effectiveProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+  const effectiveProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {}, connection.id);
 
   if (effectiveProxy.connectionProxyEnabled && effectiveProxy.connectionProxyUrl && !effectiveProxy.vercelRelayUrl) {
     const proxyResult = await testProxyUrl({ proxyUrl: effectiveProxy.connectionProxyUrl });

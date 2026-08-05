@@ -172,7 +172,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       connection = availableConnections[0];
     }
 
-    const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+    const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {}, connection.id);
 
     return {
       authType: connection.authType,

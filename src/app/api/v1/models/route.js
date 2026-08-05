@@ -77,7 +77,7 @@ const LIVE_MODEL_RESOLVERS = {
     return result?.models?.length ? { models: result.models } : null;
   },
   "grok-cli": async (conn) => {
-    const proxy = await resolveConnectionProxyConfig(conn.providerSpecificData || {});
+        const proxy = await resolveConnectionProxyConfig(conn.providerSpecificData || {}, conn.id);
     const result = await resolveGrokCliModels({
       ...conn,
       connectionId: conn.id,

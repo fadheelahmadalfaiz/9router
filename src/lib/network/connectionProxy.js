@@ -59,75 +59,107 @@ function normalizeLegacyProxy(providerSpecificData = {}) {
  * Resolve final proxy configuration.
  *
  * Priority:
- * 1. Proxy Pool
- * 2. Legacy Proxy
- * 3. No Proxy
+ * 1. Multi-Proxy Pool (new format with rotation)
+ * 2. Single Proxy Pool (legacy)
+ * 3. Legacy Proxy
+ * 4. No Proxy
  */
 export async function resolveConnectionProxyConfig(
-  providerSpecificData = {}
+  providerSpecificData = {},
+  connectionId = null
 ) {
   try {
-    const proxyPoolIdRaw = normalizeString(
-      providerSpecificData?.proxyPoolId
-    );
-
-    // "__none__" means explicitly disabled
-    const proxyPoolId =
-      proxyPoolIdRaw === "__none__" ? "" : proxyPoolIdRaw;
+    // Handle new multi-proxy format
+    const proxyPoolIds = providerSpecificData?.proxyPoolIds || [];
+    const proxyRotationStrategy = providerSpecificData?.proxyRotationStrategy || "none";
+    
+    // Handle legacy single-proxy format
+    const legacyProxyPoolId = normalizeString(providerSpecificData?.proxyPoolId);
+    const proxyPoolIdRaw = legacyProxyPoolId === "__none__" ? "" : legacyProxyPoolId;
 
     const legacy = normalizeLegacyProxy(providerSpecificData);
 
     /**
      * -----------------------------
-     * Proxy Pool Resolution
+     * Multi-Proxy Pool Resolution (NEW)
      * -----------------------------
      */
-    if (proxyPoolId) {
-      const proxyPool = await getProxyPoolById(proxyPoolId);
+    if (proxyPoolIds.length > 0) {
+      const selectedPoolId = pickProxyPoolId(proxyPoolIds, proxyRotationStrategy, connectionId);
+      
+      if (selectedPoolId) {
+        const proxyPool = await getProxyPoolById(selectedPoolId);
+        const proxyUrl = normalizeString(proxyPool?.proxyUrl);
+        const noProxy = normalizeString(proxyPool?.noProxy);
 
+        const isValidPool = proxyPool && proxyPool.isActive === true && proxyUrl;
+
+        if (isValidPool) {
+          /**
+           * Vercel/Cloudflare relay proxies use base URL rewriting
+           * instead of HTTP_PROXY environment variables.
+           */
+          if (proxyPool.type === "vercel" || proxyPool.type === "cloudflare" || proxyPool.type === "deno") {
+            return {
+              source: proxyPool.type,
+              proxyPoolId: selectedPoolId,
+              proxyPool,
+              connectionProxyEnabled: false,
+              connectionProxyUrl: "",
+              connectionNoProxy: noProxy,
+              strictProxy: proxyPool.strictProxy === true,
+              vercelRelayUrl: proxyUrl,
+            };
+          }
+
+          /**
+           * Standard proxy pool
+           */
+          return {
+            source: "pool",
+            proxyPoolId: selectedPoolId,
+            proxyPool,
+            connectionProxyEnabled: true,
+            connectionProxyUrl: proxyUrl,
+            connectionNoProxy: noProxy,
+            strictProxy: proxyPool.strictProxy === true,
+          };
+        }
+      }
+    }
+
+    /**
+     * -----------------------------
+     * Single Proxy Pool Resolution (LEGACY)
+     * -----------------------------
+     */
+    if (proxyPoolIdRaw) {
+      const proxyPool = await getProxyPoolById(proxyPoolIdRaw);
       const proxyUrl = normalizeString(proxyPool?.proxyUrl);
       const noProxy = normalizeString(proxyPool?.noProxy);
-
-      const isValidPool =
-        proxyPool &&
-        proxyPool.isActive === true &&
-        proxyUrl;
+      const isValidPool = proxyPool && proxyPool.isActive === true && proxyUrl;
 
       if (isValidPool) {
-        /**
-         * Vercel/Cloudflare relay proxies use base URL rewriting
-         * instead of HTTP_PROXY environment variables.
-         */
         if (proxyPool.type === "vercel" || proxyPool.type === "cloudflare" || proxyPool.type === "deno") {
           return {
             source: proxyPool.type,
-
-            proxyPoolId,
+            proxyPoolId: proxyPoolIdRaw,
             proxyPool,
-
             connectionProxyEnabled: false,
             connectionProxyUrl: "",
             connectionNoProxy: noProxy,
-
             strictProxy: proxyPool.strictProxy === true,
-
-            vercelRelayUrl: proxyUrl, // Still mapped to vercelRelayUrl in the unified payload since they use the exact same header spec
+            vercelRelayUrl: proxyUrl,
           };
         }
 
-        /**
-         * Standard proxy pool
-         */
         return {
           source: "pool",
-
-          proxyPoolId,
+          proxyPoolId: proxyPoolIdRaw,
           proxyPool,
-
           connectionProxyEnabled: true,
           connectionProxyUrl: proxyUrl,
           connectionNoProxy: noProxy,
-
           strictProxy: proxyPool.strictProxy === true,
         };
       }
@@ -145,7 +177,7 @@ export async function resolveConnectionProxyConfig(
       return {
         source: "legacy",
 
-        proxyPoolId: proxyPoolId || null,
+        proxyPoolId: proxyPoolIdRaw || null,
         proxyPool: null,
 
         ...legacy,
@@ -160,7 +192,7 @@ export async function resolveConnectionProxyConfig(
     return {
       source: "none",
 
-      proxyPoolId: proxyPoolId || null,
+      proxyPoolId: proxyPoolIdRaw || null,
       proxyPool: null,
 
       ...legacy,
