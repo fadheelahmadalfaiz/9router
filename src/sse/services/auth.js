@@ -8,39 +8,13 @@ import * as log from "../utils/logger.js";
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
 
-const ANTIGRAVITY_POOL_FIELDS = [
-  "rateLimitedUntil",
-  "authCooldownUntil",
-  "modelCooldowns",
-  "consecutiveStrikes",
-  "modelStrikes",
-  "lastUsedAt",
-  "lastPoolError",
-  "lastPoolErrorAt",
-];
+const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
-function pickAntigravityPoolFields(connection) {
-  return Object.fromEntries(ANTIGRAVITY_POOL_FIELDS.map((key) => [key, connection[key]]));
-}
-
-function isAntigravityAccountPoolEnabled(settings) {
-  return settings?.antigravityAccountPoolEnabled === true;
-}
-
-async function persistAntigravityPoolUpdate(connection, updater) {
-  if (!connection?.id || connection.provider !== "antigravity") return;
-  const settings = await getSettings();
-  if (!isAntigravityAccountPoolEnabled(settings)) return;
-  const next = updater(connection, settings);
-  await updateProviderConnection(connection.id, pickAntigravityPoolFields(next));
-}
-
-function isAntigravityQuotaStatus(status) {
-  return status === 429 || status === 503;
-}
-
-function isAntigravityAuthStatus(status) {
-  return status === 401 || status === 403;
+function githubMonthlyResetMs(status, errorText, provider) {
+  if (resolveProviderId(provider) !== "github" || Number(status) !== 402) return null;
+  if (!String(errorText || "").toLowerCase().includes(GITHUB_MONTHLY_USAGE_LIMIT)) return null;
+  const now = new Date();
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
 }
 
 /**
@@ -248,15 +222,16 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
 
-  if (provider === "antigravity" && conn && isAntigravityQuotaStatus(status)) {
-    await persistAntigravityPoolUpdate(conn, (connection, settings) => recordAntigravityQuotaFailure(connection, { settings, model, statusCode: status }));
-  } else if (provider === "antigravity" && conn && isAntigravityAuthStatus(status)) {
-    await persistAntigravityPoolUpdate(conn, (connection, settings) => recordAntigravityAuthFailure(connection, { settings, statusCode: status }));
-  }
+  // GitHub premium-request exhaustion is account-wide until the next UTC month.
+  const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
   let shouldFallback, cooldownMs, newBackoffLevel;
-  if (resetsAtMs && resetsAtMs > Date.now()) {
+  if (githubResetAtMs) {
+    shouldFallback = true;
+    cooldownMs = githubResetAtMs - Date.now();
+    newBackoffLevel = 0;
+  } else if (resetsAtMs && resetsAtMs > Date.now()) {
     shouldFallback = true;
     cooldownMs = Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
     newBackoffLevel = 0;
@@ -266,7 +241,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
-  const lockUpdate = buildModelLockUpdate(model, cooldownMs);
+  const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
