@@ -97,6 +97,25 @@ Claude Code/Codex/OpenClaw/Cursor/Cline Settings:
 
 **That's it!** Start coding with FREE AI models.
 
+---
+
+## 🔄 Keep Your Fork Updated
+
+If you forked this repository from `decolua/9router`, sync with upstream updates:
+
+```bash
+cd /path/to/your/9router-fork
+
+# Fetch and rebase with upstream
+git fetch upstream
+git rebase upstream/master
+git push origin master --force-with-lease
+```
+
+If conflicts occur during rebase, resolve them manually then run `git rebase --continue`.
+
+---
+
 **Alternative: run from source (this repository):**
 
 This repository package is private (`9router-app`), so source/Docker execution is the expected local development path.
