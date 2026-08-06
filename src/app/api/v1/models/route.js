@@ -485,6 +485,10 @@ export async function buildModelsList(kindFilter, options = {}) {
           || capabilitiesFromServiceKind(customKind || liveKind)
           || (kind === LLM_KIND ? getCapabilitiesForModel(providerId, modelId) : null);
         if (caps) model.capabilities = caps;
+        // Advertise the context window for clients that read it from /v1/models
+        // (OpenAI-compatible convention; opencode's generic adapter ignores it
+        // and needs limit.context declared client-side).
+        if (caps?.contextWindow) model.context_window = caps.contextWindow;
         models.push(model);
       }
 
