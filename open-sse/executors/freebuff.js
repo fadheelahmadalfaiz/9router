@@ -491,19 +491,14 @@ export class FreebuffExecutor extends BaseExecutor {
       for (let attempt = 0; ; attempt++) {
         const transformedBody = buildBody();
         const bodyStr = JSON.stringify(transformedBody);
-        dbg("FETCH", `FREEBUFF → ${url} | body=${bodyStr.length}B`);
 
         const connectCtrl = new AbortController();
         const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
         const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
         const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
-        const fetchT0 = Date.now();
         let response;
         try {
           response = await proxyAwareFetch(url, { method: "POST", headers, body: bodyStr, signal: mergedSignal }, proxyOptions);
-          const ct = response.headers?.get?.("content-type") || "";
-          const cl = response.headers?.get?.("content-length") || "?";
-          dbg("FETCH", `FREEBUFF ← ${response.status} | ttft=${Date.now() - fetchT0}ms | ct=${ct} | cl=${cl}`);
         } catch (error) {
           // A caller/stream abort (AbortError) is genuine — never retry it. A
           // transient socket/TLS reset (same class as the run-registration
