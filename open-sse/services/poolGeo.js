@@ -21,19 +21,6 @@ export const POOL_GEO_TTL_MS = 60 * 60 * 1000;
 // How many past egress IPs to remember for flapping detection.
 export const POOL_GEO_IP_HISTORY_MAX = 8;
 
-// Debounce probe-failure logs: one line per failing pool per hour — the probe
-// runs every 30 min, so a broken relay must not spam the log every pass.
-const probeFailLogs = new Map(); // proxyUrl -> lastLoggedAt
-const PROBE_FAIL_LOG_INTERVAL_MS = 60 * 60 * 1000;
-
-function logProbeFailure(kind, proxyUrl, detail) {
-  const key = String(proxyUrl || "");
-  const now = Date.now();
-  if (probeFailLogs.has(key) && now - probeFailLogs.get(key) < PROBE_FAIL_LOG_INTERVAL_MS) return;
-  probeFailLogs.set(key, now);
-  console.log(`[GeoProbe] ${kind} ${key.slice(0, 60)}${detail ? ` | ${detail.slice(0, 120)}` : ""}`);
-}
-
 // Test helper: drop all cached geo (module state is globalThis-backed).
 export function resetPoolGeo() {
   geoCache.clear();
@@ -96,10 +83,12 @@ export function pruneStaleGeo(now = Date.now()) {
 }
 
 // Probe the egress geo of one pool via ipinfo through the pool. Fail-open:
-// returns null on any error/timeout. `pool` shape: { proxyUrl, type }.
+// returns { ok:true, geo } on success, { ok:false, error } otherwise with
+// `error` one of "rate-limit" | "server" | "no-ip" | "network" | "timeout".
+// `pool` shape: { proxyUrl, type }.
 export async function probePoolGeo(pool, timeoutMs = 15000) {
   const proxyUrl = pool?.proxyUrl;
-  if (!proxyUrl) return null;
+  if (!proxyUrl) return { ok: false, error: "network" };
   const { proxyAwareFetch } = await import("../utils/proxyFetch.js");
   const isRelay = ["vercel", "cloudflare", "deno"].includes(pool?.type);
   const proxyOptions = isRelay
@@ -112,25 +101,29 @@ export async function probePoolGeo(pool, timeoutMs = 15000) {
     const res = await proxyAwareFetch("https://ipinfo.io/json", { signal: ctrl.signal }, proxyOptions);
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
-      logProbeFailure(`http ${res.status}`, proxyUrl, txt);
-      return null;
+      const error = res.status === 429 || res.status === 403 ? "rate-limit"
+        : res.status >= 500 ? "server"
+        : "network";
+      return { ok: false, error, detail: `${res.status} ${txt.slice(0, 60)}` };
     }
     const data = await res.json().catch(() => null);
     if (!data?.ip) {
-      logProbeFailure("no-ip", proxyUrl, "");
-      return null;
+      return { ok: false, error: "no-ip" };
     }
     return {
-      ip: data.ip || "",
-      country: data.country || "",
-      region: data.region || "",
-      city: data.city || "",
-      org: data.org || "",
-      isDatacenter: /(cloudflare|vercel|amazon|aws|google|microsoft|azure|digitalocean|hetzner|ovh|contabo|leaseweb)/i.test(String(data.org || "")),
+      ok: true,
+      geo: {
+        ip: data.ip || "",
+        country: data.country || "",
+        region: data.region || "",
+        city: data.city || "",
+        org: data.org || "",
+        isDatacenter: /(cloudflare|vercel|amazon|aws|google|microsoft|azure|digitalocean|hetzner|ovh|contabo|leaseweb)/i.test(String(data.org || "")),
+      },
     };
   } catch (error) {
-    logProbeFailure("fail", proxyUrl, `${error?.name}: ${error?.message}`);
-    return null;
+    const timedOut = ctrl.signal?.aborted && error?.name === "AbortError";
+    return { ok: false, error: timedOut ? "timeout" : "network", detail: `${error?.name}: ${error?.message}` };
   } finally {
     clearTimeout(timer);
   }
