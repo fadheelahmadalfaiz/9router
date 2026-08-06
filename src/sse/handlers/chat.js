@@ -17,6 +17,7 @@ import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
+import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
@@ -284,6 +285,23 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
       onPxpipeEvent: appendPxpipeEvent,
       providerThinking,
+      // Pool-scoped failure recovery: re-resolve proxy config excluding the
+      // failed pool so the request retries via another pool, not a dead end.
+      resolveProxyConfig: async (creds, excludePoolIds = []) => {
+        const psd = { ...(creds?.providerSpecificData || {}) };
+        if (psd.proxyPoolIds?.length) psd.proxyPoolScope = `${provider}::${model}`;
+        const resolved = await resolveConnectionProxyConfig(psd, creds?.connectionId || creds?.id, excludePoolIds);
+        if (!resolved?.proxyPoolId) return null;
+        return {
+          connectionProxyEnabled: resolved.connectionProxyEnabled,
+          connectionProxyUrl: resolved.connectionProxyUrl,
+          connectionNoProxy: resolved.connectionNoProxy,
+          connectionProxyPoolId: resolved.proxyPoolId || null,
+          vercelRelayUrl: resolved.vercelRelayUrl || "",
+          proxyPoolId: resolved.proxyPoolId || null,
+          strictProxy: resolved.strictProxy === true,
+        };
+      },
       // Detect source format by endpoint + body
       sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
       onCredentialsRefreshed: async (newCreds) => {

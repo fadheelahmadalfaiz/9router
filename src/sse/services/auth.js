@@ -47,10 +47,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const override = (settings.providerStrategies || {})[providerId] || {};
       const strategy = override.rotateStrategy || "none";
       let pickedId = override.proxyPoolId || null;
+      let poolIds = [];
       if (strategy !== "none") {
         const allPools = await getProxyPools({ isActive: true });
-        const poolIds = allPools.filter(p => p.proxyUrl).map(p => p.id);
-        pickedId = pickProxyPoolId(poolIds, strategy, providerId);
+        poolIds = allPools.filter(p => p.proxyUrl).map(p => p.id);
+        // Scope region-aware ("smart") filtering to this provider/model so
+        // pools marked unfit here are skipped.
+        const scope = `${providerId}::${model || "*"}`;
+        pickedId = pickProxyPoolId(poolIds, strategy, providerId, { scope });
+      } else if (override.proxyPoolId) {
+        poolIds = [override.proxyPoolId];
       }
       const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: pickedId || "" });
       return {
@@ -64,6 +70,13 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           connectionNoProxy: resolvedProxy.connectionNoProxy,
           connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
           vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
+          proxyPoolId: resolvedProxy.proxyPoolId || null,
+          strictProxy: resolvedProxy.strictProxy === true,
+          // Let chatCore's pool-scoped retry rotate across the same candidate
+          // pool set (excluding the failed pool) instead of reusing it — this
+          // is what makes per-IP limit retries work for no-auth providers.
+          proxyPoolIds: poolIds,
+          proxyRotationStrategy: strategy,
         },
       };
     }
@@ -172,7 +185,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       connection = availableConnections[0];
     }
 
-    const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {}, connection.id);
+    // Scope the region-aware picker to this provider/model (e.g. freebuff::gpt-5.6-luna)
+    const psdForProxy = connection.providerSpecificData?.proxyPoolIds?.length
+      ? { ...connection.providerSpecificData, proxyPoolScope: `${providerId}::${model || ""}` }
+      : connection.providerSpecificData;
+    const resolvedProxy = await resolveConnectionProxyConfig(psdForProxy || {}, connection.id);
 
     return {
       authType: connection.authType,
@@ -193,6 +210,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         connectionNoProxy: resolvedProxy.connectionNoProxy,
         connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
         vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
+        proxyPoolId: resolvedProxy.proxyPoolId || null,
+        strictProxy: resolvedProxy.strictProxy === true,
       },
       connectionId: connection.id,
       // Include current status for optimization check

@@ -43,7 +43,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     }
     
     if (selectedProxyIds.length > 1) {
-      const strategyLabel = rotationStrategy === "random" ? "Random" : rotationStrategy === "round-robin" ? "Round Robin" : rotationStrategy === "failover" ? "Failover" : "Multiple";
+      const strategyLabel = rotationStrategy === "random" ? "Random" : rotationStrategy === "round-robin" ? "Round Robin" : rotationStrategy === "failover" ? "Failover" : rotationStrategy === "smart" ? "Smart" : "Multiple";
       return `${selectedProxyIds.length} pools (${strategyLabel})`;
     }
     
@@ -318,7 +318,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
                 <span className="text-[10px] leading-tight">Proxy</span>
               </button>
               {showProxyDropdown && (
-                <div className="absolute right-0 top-full z-50 mt-1 max-w-[90vw] min-w-[280px] rounded-lg border border-border bg-bg shadow-lg">
+                <div className="absolute left-0 top-full z-50 mt-1 max-w-[calc(100vw-2rem)] min-w-[280px] rounded-lg border border-border bg-bg shadow-lg sm:left-auto sm:right-0">
                   {/* Rotation Strategy Selector */}
                   <div className="border-b border-border p-3">
                     <label className="block text-xs font-medium text-text-muted mb-2">Rotation Strategy</label>
@@ -331,18 +331,20 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
                       <option value="random">Random</option>
                       <option value="round-robin">Round Robin</option>
                       <option value="failover">Failover</option>
+                      <option value="smart">Smart</option>
                     </select>
                     {rotationStrategy !== "none" && (
                       <p className="mt-1 text-[10px] text-text-muted">
                         {rotationStrategy === "random" && "Randomly select proxy on each request"}
                         {rotationStrategy === "round-robin" && "Rotate proxies in order across requests"}
                         {rotationStrategy === "failover" && "Try next proxy on failure"}
+                        {rotationStrategy === "smart" && "Skip pools whose egress IP is blocked for this provider/model (e.g. Freebuff limited-IP). See Proxy Fitness to clear/block."}
                       </p>
                     )}
                   </div>
 
                   {/* Proxy Pool Selection */}
-                  <div className="max-h-[60vh] overflow-y-auto py-1">
+                  <div className="max-h-[200px] overflow-y-auto py-1">
                     <button
                       onClick={() => {
                         setSelectedProxyIds([]);

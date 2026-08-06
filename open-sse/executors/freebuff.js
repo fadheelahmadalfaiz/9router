@@ -8,6 +8,7 @@ import {
   DEFAULT_RETRY_CONFIG,
   resolveRetryEntry,
 } from "../config/runtimeConfig.js";
+import { markPoolUnfit, clearPoolUnfit } from "../services/proxyPoolFitness.js";
 
 /**
  * Freebuff Executor — OpenAI-compatible chat completions on
@@ -87,8 +88,110 @@ const FREE_ROOT_AGENT_BY_MODEL = {
 // don't share one session row). Re-claims are driven by the cache expiring or
 // by a 428 from chat — no early re-claim, so we never POST /session while our
 // own row is still active (which could come back as a spurious model_locked).
-const sessionCache = new Map(); // `${token}::${model}` -> { instanceId, expiresAt }
-const inflight = new Map();     // dedupe concurrent claims for the same key
+// All state lives on globalThis so Next dev (Turbopack) bundles share ONE copy.
+const FB_STATE_KEY = "__9routerFreebuffState__";
+const fbState = (globalThis[FB_STATE_KEY] ??= {
+  sessionCache: new Map(),      // `${token}::${model}` -> { instanceId, expiresAt }
+  inflight: new Map(),          // dedupe concurrent claims for the same key
+  modelLockCooldowns: new Map(), // `${token}::${model}` -> expiresAt (ms)
+  poolLimitCooldowns: new Map(), // `${proxyKey}::${model}` -> expiresAt (ms)
+});
+const sessionCache = fbState.sessionCache;
+const inflight = fbState.inflight;
+const modelLockCooldowns = fbState.modelLockCooldowns;
+const poolLimitCooldowns = fbState.poolLimitCooldowns;
+
+const MODEL_LOCK_COOLDOWN_MS = 10 * 60 * 1000; // session bound to another model (~1h) — re-check every 10 min
+const POOL_LIMITED_COOLDOWN_MS = 5 * 60 * 1000; // IP tier refuses this model — try a different pool/relay
+
+// Cooldown maps need pruning: expired entries are cleared on write (sweep) and
+// on read, so long-running servers don't accumulate one entry per (account,model)
+// / (proxy,model) forever.
+function setCooldown(map, key, until) {
+  const now = Date.now();
+  for (const [k, v] of map) {
+    if (v <= now) map.delete(k);
+  }
+  map.set(key, until);
+}
+
+function getCooldown(map, key) {
+  const until = map.get(key);
+  if (until == null) return null;
+  if (until <= Date.now()) {
+    map.delete(key);
+    return null;
+  }
+  return until;
+}
+
+function proxyKeyOf(proxyOptions) {
+  return proxyOptions?.vercelRelayUrl || proxyOptions?.connectionProxyUrl || "direct";
+}
+
+function sessionGateFromText(text) {
+  let parsed = {};
+  try { parsed = JSON.parse(String(text || "")); } catch { parsed = {}; }
+  return classifySessionGate(parsed.error || parsed.error_type || "", parsed.message || "", parsed.currentModel || null);
+}
+
+// Parse a 409/428/410 body into { kind, currentModel }. `msg` may be a whole
+// error string containing a JSON tail (requestSession errors embed the body).
+function sessionGateFromError(error) {
+  const msg = String(error?.message || "");
+  const start = msg.indexOf("{");
+  if (start < 0) return null;
+  try {
+    const parsed = JSON.parse(msg.slice(start));
+    return classifySessionGate(parsed.error || "", parsed.message || "", parsed.currentModel || null);
+  } catch {
+    return null;
+  }
+}
+
+function classifySessionGate(code, message, currentModel) {
+  if (code === "session_superseded") return { kind: "superseded" };
+  if (code === "model_locked") return { kind: "model_locked", currentModel };
+  // session_model_mismatch with the limited-tier message is an IP-tier refusal;
+  // without it (or unknown) treat it as a model lock so we don't reclaim in a loop.
+  if (code === "session_model_mismatch") {
+    return /limited/i.test(String(message || ""))
+      ? { kind: "limited_ip" }
+      : { kind: "model_locked", currentModel };
+  }
+  return { kind: "stale" }; // 428/410/unknown → reclaim
+}
+
+// Applies cooldowns and throws for non-reclaimable gates. Never returns for them.
+function throwSessionGateError(gate, { token, model, proxyKey, poolId, log }) {
+  if (gate.kind === "model_locked") {
+    const until = Date.now() + MODEL_LOCK_COOLDOWN_MS;
+    setCooldown(modelLockCooldowns, `${token}::${model}`, until);
+    const label = gate.currentModel ? `"${gate.currentModel}"` : "another model";
+    const err = new Error(
+      `Freebuff session is locked to ${label} — it cannot serve ${model}. End the session on freebuff.com or wait for it to expire (~1h).`,
+    );
+    err.status = 409;
+    err.resetsAtMs = until;
+    log?.warn?.("AUTH", `Freebuff model_locked (session=${label}, requested=${model}) — model cooldown ${MODEL_LOCK_COOLDOWN_MS / 60000}min`);
+    throw err;
+  }
+  if (gate.kind === "limited_ip") {
+    const until = Date.now() + POOL_LIMITED_COOLDOWN_MS;
+    setCooldown(poolLimitCooldowns, `${proxyKey}::${model}`, until);
+    const scope = `freebuff::${model}`;
+    if (poolId) markPoolUnfit(poolId, scope, until, "limited_ip");
+    // Pool-scoped, not account-scoped: the caller retries via another pool
+    // instead of locking the account (resetsAtMs intentionally absent).
+    const err = new Error(
+      `Freebuff limited-mode IP rejected ${model} — this IP only allows DeepSeek V4 Flash / MiMo 2.5. Use a full-access proxy or a different model.`,
+    );
+    err.status = 409;
+    err.poolScoped = { poolId, scope, reason: "limited_ip" };
+    log?.warn?.("AUTH", `Freebuff limited-IP refused ${model} (proxy=${proxyKey.slice(0, 40)}…) — cooldown ${POOL_LIMITED_COOLDOWN_MS / 60000}min`);
+    throw err;
+  }
+}
 
 function sessionOrigin() {
   return new URL(PROVIDERS.freebuff.baseUrl).origin; // https://www.codebuff.com
@@ -185,7 +288,11 @@ async function requestSession(token, model, proxyOptions) {
 
 async function ensureSession(token, model, proxyOptions, force = false) {
   const key = sessionCacheKey(token, model);
+  // Lazy prune: drop stale rows so the cache never accumulates expired entries.
   const cached = sessionCache.get(key);
+  if (cached && cached.expiresAt <= Date.now()) {
+    sessionCache.delete(key);
+  }
   if (!force && cached && cached.expiresAt > Date.now()) {
     return { instanceId: cached.instanceId, status: "active" };
   }
@@ -262,6 +369,32 @@ export function resetSessionCache() {
   inflight.clear();
 }
 
+// Periodic sweeper: drop stale session rows + expired cooldowns so long-running
+// servers never accumulate state for accounts/models no longer in use.
+// Returns how many entries were removed.
+export function pruneSessionState(now = Date.now()) {
+  let removed = 0;
+  for (const [key, entry] of sessionCache) {
+    if (entry?.expiresAt && entry.expiresAt <= now) {
+      sessionCache.delete(key);
+      removed += 1;
+    }
+  }
+  for (const [key, until] of modelLockCooldowns) {
+    if (until <= now) {
+      modelLockCooldowns.delete(key);
+      removed += 1;
+    }
+  }
+  for (const [key, until] of poolLimitCooldowns) {
+    if (until <= now) {
+      poolLimitCooldowns.delete(key);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
 export class FreebuffExecutor extends BaseExecutor {
   constructor() {
     super("freebuff", PROVIDERS.freebuff);
@@ -282,6 +415,12 @@ export class FreebuffExecutor extends BaseExecutor {
       cost_mode: "free",
     };
     body.provider = { allow_fallbacks: false };
+    // Freebuff agents (base2-free-*) own reasoning: the backend applies the
+    // agent's reasoningOptions.effort server-side, so a client-sent
+    // reasoning_effort / reasoning.effort collides with that default →
+    // 400 "both provided with conflicting values". Mirror the CLI: send none.
+    delete body.reasoning_effort;
+    delete body.reasoning;
     // Free-tier gate: first system message must open with the CLI marker.
     return injectFreebuffMarker(body);
   }
@@ -292,10 +431,32 @@ export class FreebuffExecutor extends BaseExecutor {
       throw new Error("Freebuff requires a connected Freebuff login (no access token found)");
     }
 
+    // Fail fast while a known-dead (account,model) / (proxy,model) pair is in
+    // cooldown — no session claim, no run registration, no upstream spam.
+    const proxyKey = proxyKeyOf(proxyOptions);
+    const poolId = proxyOptions?.proxyPoolId || null;
+    const scope = `freebuff::${model}`;
+    const lockUntil = getCooldown(modelLockCooldowns, `${token}::${model}`);
+    if (lockUntil) {
+      const err = new Error(`Freebuff session locked to another model — retry after ${new Date(lockUntil).toLocaleTimeString()}`);
+      err.status = 409;
+      err.resetsAtMs = lockUntil;
+      throw err;
+    }
+    const poolUntil = getCooldown(poolLimitCooldowns, `${proxyKey}::${model}`);
+    if (poolUntil) {
+      const err = new Error(`Freebuff limited-mode IP rejected ${model} — retry with a full-access proxy after ${new Date(poolUntil).toLocaleTimeString()}`);
+      err.status = 409;
+      err.poolScoped = { poolId, scope, reason: "limited_ip" };
+      throw err;
+    }
+
     let session;
     try {
       session = await ensureSession(token, model, proxyOptions);
     } catch (error) {
+      const gate = sessionGateFromError(error);
+      if (gate) throwSessionGateError(gate, { token, model, proxyKey, poolId, log });
       log?.error?.("AUTH", `Freebuff session failed: ${error.message}`);
       throw error;
     }
@@ -396,9 +557,17 @@ export class FreebuffExecutor extends BaseExecutor {
       //   409 session_superseded — another instance took over the session
       //   409 session_model_mismatch — session bound to a different model
       //   410 session_expired    — the active session's expires_at passed
-      // In every case: abandon the run, force a fresh session claim + a fresh
-      // run, then retry exactly once.
+      // model_locked / limited-tier mismatches are NOT reclaimable — the server
+      // keeps refusing until the session expires or the IP tier changes, so we
+      // set a cooldown and fail fast instead of force re-claiming in a loop.
       if (SESSION_STALE_CODES.has(response.status)) {
+        const text = await response.text().catch(() => "");
+        const gate = sessionGateFromText(text);
+        if (gate.kind === "model_locked" || gate.kind === "limited_ip") {
+          markFinished("cancelled");
+          throwSessionGateError(gate, { token, model, proxyKey, poolId, log });
+        }
+
         log?.debug?.("AUTH", `Freebuff ${response.status} session gate — re-claiming session`);
         markFinished("cancelled");
         try {
@@ -406,19 +575,32 @@ export class FreebuffExecutor extends BaseExecutor {
           runId = await startRun(token, model, proxyOptions);
           activeRunId = runId;
         } catch (error) {
+          const gate2 = sessionGateFromError(error);
+          if (gate2) throwSessionGateError(gate2, { token, model, proxyKey, poolId, log });
           log?.error?.("AUTH", `Freebuff session re-claim failed: ${error.message}`);
           throw error;
         }
         ({ response, transformedBody } = await doChat());
 
         if (SESSION_STALE_CODES.has(response.status)) {
-          const text = await response.text().catch(() => "");
+          const text2 = await response.text().catch(() => "");
+          const gate3 = sessionGateFromText(text2);
+          if (gate3.kind === "model_locked" || gate3.kind === "limited_ip") {
+            throwSessionGateError(gate3, { token, model, proxyKey, poolId, log });
+          }
           const err = new Error(
-            `Freebuff session gate refused (${response.status}) — another freebuff instance may be holding the session. ${text.slice(0, 160)}`,
+            `Freebuff session gate refused (${response.status}) — another freebuff instance may be holding the session. ${text2.slice(0, 160)}`,
           );
           err.status = response.status;
           throw err;
         }
+      }
+
+      // A successful chat means the pair is healthy again — lift any cooldowns.
+      if (response.ok) {
+        modelLockCooldowns.delete(`${token}::${model}`);
+        poolLimitCooldowns.delete(`${proxyKey}::${model}`);
+        if (poolId) clearPoolUnfit(poolId, scope);
       }
 
       // The authToken has no refresh path — when it dies, the user re-logs in.

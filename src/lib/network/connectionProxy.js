@@ -1,4 +1,5 @@
 import { getProxyPoolById } from "@/models";
+import { fitPoolIds } from "open-sse/services/proxyPoolFitness.js";
 
 // Safely normalize any value into a trimmed string.
 function normalizeString(value) {
@@ -13,24 +14,41 @@ const rotateState = new Map(); // providerId → { index }
  * Pick one proxy pool ID from a list based on strategy.
  * round-robin: cycle sequentially (in-memory, resets on restart)
  * random:      uniform random pick
+ * smart:       region-aware — skip pools unfit for `scope`, round-robin on the fit subset
  * none/single: return first entry
+ * @param {string[]} poolIds
+ * @param {string} strategy
+ * @param {string} providerId
+ * @param {{ scope?: string, excludeIds?: string[] }} [opts]
  */
-export function pickProxyPoolId(poolIds, strategy, providerId) {
+export function pickProxyPoolId(poolIds, strategy, providerId, opts = {}) {
   if (!poolIds || poolIds.length === 0) return null;
-  if (poolIds.length === 1) return poolIds[0];
+  const { scope = null, excludeIds = [] } = opts || {};
 
-  if (strategy === "round-robin") {
+  let eligible = poolIds.filter((id) => !(excludeIds || []).includes(id));
+  // Region-aware filtering is opt-in via the "smart" strategy.
+  if (strategy === "smart" && scope) eligible = fitPoolIds(eligible, scope);
+
+  if (eligible.length === 0) {
+    // Every candidate is unfit/excluded — fall back to the first non-excluded
+    // pool rather than deadlocking; its egress may have recovered.
+    eligible = poolIds.filter((id) => !(excludeIds || []).includes(id));
+    if (eligible.length === 0) return null;
+  }
+  if (eligible.length === 1) return eligible[0];
+
+  if (strategy === "round-robin" || strategy === "smart") {
     const state = rotateState.get(providerId) || { index: -1 };
-    state.index = (state.index + 1) % poolIds.length;
+    state.index = (state.index + 1) % eligible.length;
     rotateState.set(providerId, state);
-    return poolIds[state.index];
+    return eligible[state.index];
   }
 
   if (strategy === "random") {
-    return poolIds[Math.floor(Math.random() * poolIds.length)];
+    return eligible[Math.floor(Math.random() * eligible.length)];
   }
 
-  return poolIds[0]; // "none" or unknown
+  return eligible[0]; // "none" or unknown
 }
 
 /**
@@ -66,7 +84,8 @@ function normalizeLegacyProxy(providerSpecificData = {}) {
  */
 export async function resolveConnectionProxyConfig(
   providerSpecificData = {},
-  connectionId = null
+  connectionId = null,
+  excludePoolIds = null
 ) {
   try {
     // Handle new multi-proxy format
@@ -85,7 +104,8 @@ export async function resolveConnectionProxyConfig(
      * -----------------------------
      */
     if (proxyPoolIds.length > 0) {
-      const selectedPoolId = pickProxyPoolId(proxyPoolIds, proxyRotationStrategy, connectionId);
+      const scope = providerSpecificData?.proxyPoolScope || null;
+      const selectedPoolId = pickProxyPoolId(proxyPoolIds, proxyRotationStrategy, connectionId, { scope, excludeIds: excludePoolIds });
       
       if (selectedPoolId) {
         const proxyPool = await getProxyPoolById(selectedPoolId);
