@@ -20,7 +20,8 @@ import {
   formatProviderCredentials as _formatProviderCredentials,
   getAllAccessTokens as _getAllAccessTokens,
   refreshKiroToken as _refreshKiroToken,
-  getRefreshLeadMs as _getRefreshLeadMs
+  getRefreshLeadMs as _getRefreshLeadMs,
+  isUnrecoverableRefreshError,
 } from "open-sse/services/tokenRefresh.js";
 import {
   refreshProviderCredentials as _refreshProviderCredentials,
@@ -238,10 +239,26 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
     });
 
     const newCreds = await _refreshProviderCredentials(provider, creds, log);
+    if (isUnrecoverableRefreshError(newCreds)) {
+      // Refresh token is dead (revoked/reused/expired) — retrying forever just
+      // spams xAI's endpoint every tick. Tag the result so the background
+      // scheduler can stop retrying and surface "re-login required".
+      log.warn("TOKEN_REFRESH", `Refresh token unrecoverable for ${provider} — re-login required`, {
+        error: newCreds.error,
+      });
+      return { ...creds, refreshError: newCreds.error, refreshErrorAt: new Date().toISOString() };
+    }
     if (newCreds?.accessToken || newCreds?.apiKey || newCreds?.copilotToken) {
       const mergedCreds = {
         ...newCreds,
-        existingProviderSpecificData: creds.providerSpecificData,
+        // Lift any previous refreshBlocked marker — the refresh just succeeded
+        // (covers in-place re-auth flows that keep the same connection row).
+        existingProviderSpecificData: {
+          ...(creds.providerSpecificData || {}),
+          ...(creds.providerSpecificData?.refreshBlocked
+            ? { refreshBlocked: undefined, refreshBlockedAt: undefined }
+            : {}),
+        },
       };
 
       // Persist to DB (non-blocking path continues below)
