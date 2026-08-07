@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Badge, Button, Card, CardSkeleton, Input, ConfirmModal } from "@/shared/components";
+import { Badge, Button, Card, CardSkeleton, Input, ConfirmModal, Toggle } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { useNotificationStore } from "@/store/notificationStore";
 
@@ -69,6 +69,8 @@ export default function ProxyFitnessPage() {
   const [clearingScope, setClearingScope] = useState(null); // poolId::scope while clearing
   const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [clearingAll, setClearingAll] = useState(false);
+  const [geoEnabled, setGeoEnabled] = useState(true);
+  const [geoUpdating, setGeoUpdating] = useState(false);
   const providerMenuRef = useRef(null);
   const notify = useNotificationStore();
 
@@ -108,6 +110,36 @@ export default function ProxyFitnessPage() {
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
+
+  useEffect(() => {
+    fetch("/api/settings", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((s) => {
+        if (typeof s.poolGeoProbeEnabled === "boolean") setGeoEnabled(s.poolGeoProbeEnabled);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleGeoToggle = async (next) => {
+    setGeoUpdating(true);
+    setGeoEnabled(next);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ poolGeoProbeEnabled: next }),
+      });
+      if (!res.ok) {
+        setGeoEnabled(!next);
+        throw new Error(`HTTP ${res.status}`);
+      }
+      notify.success(next ? "Geo probe enabled" : "Geo probe disabled");
+    } catch (err) {
+      notify.error(`Update failed: ${err.message}`);
+    } finally {
+      setGeoUpdating(false);
+    }
+  };
 
   const records = useMemo(() => buildRecords(fitness, pools), [fitness, pools]);
 
@@ -215,6 +247,14 @@ export default function ProxyFitnessPage() {
                   Clear All{providerFilter !== "all" ? ` (${providerFilter})` : ""}
                 </Button>
               )}
+              <Toggle
+                size="sm"
+                checked={geoEnabled}
+                onChange={handleGeoToggle}
+                disabled={geoUpdating}
+                label="Geo probe"
+                description="Probe egress IP/country per pool ±30 min (pemakaian kuota geo-API)"
+              />
               <Button variant="secondary" size="sm" icon="refresh" onClick={fetchAll}>Refresh</Button>
             </div>
           </div>

@@ -10,6 +10,7 @@
 import { getProxyPools } from "@/models";
 import { probePoolGeo, setPoolGeo, getPoolGeo } from "open-sse/services/poolGeo.js";
 import { isNonServerRuntime } from "@/sse/services/backgroundTokenRefresh.js";
+import { getSettings } from "@/lib/localDb";
 
 const PROBE_INTERVAL_MS = 30 * 60 * 1000;
 const INITIAL_DELAY_MS = 15 * 1000;
@@ -44,6 +45,13 @@ async function probeAll() {
   if (probing) return;
   probing = true;
   try {
+    // UI toggle (settings.poolGeoProbeEnabled) gates the whole feature; the
+    // env var remains a hard override for headless setups.
+    try {
+      const settings = await getSettings();
+      if (settings?.poolGeoProbeEnabled === false) return;
+    } catch { /* DB hiccup — keep probing (fail-open) */ }
+
     const pools = await getProxyPools({ isActive: true });
     const now = Date.now();
     const active = (pools || []).filter((p) => !!p?.proxyUrl);
