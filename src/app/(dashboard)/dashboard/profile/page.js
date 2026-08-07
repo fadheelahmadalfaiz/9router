@@ -661,6 +661,15 @@ export default function ProfilePage() {
               >
                 Import Backup
               </Button>
+              <Button
+                variant="outline"
+                icon="memory"
+                onClick={handleMemoryCheck}
+                loading={memoryLoading}
+                className="w-full sm:w-auto"
+              >
+                Check Size Memory
+              </Button>
               <input
                 ref={importFileRef}
                 type="file"
@@ -674,24 +683,13 @@ export default function ProfilePage() {
                 {dbStatus.message}
               </p>
             )}
-            <div className="flex flex-col gap-1.5 mt-1 pt-3 border-t border-border">
-              <Button
-                variant="outline"
-                icon="memory"
-                onClick={handleMemoryCheck}
-                loading={memoryLoading}
-                className="w-full sm:w-auto self-start"
-              >
-                Check Size Memory
-              </Button>
-              {memoryInfo && (
-                <pre className="text-[11px] font-mono text-text-muted whitespace-pre-wrap break-all">
-                  {memoryInfo.error
-                    ? `Error: ${memoryInfo.error}`
-                    : memoryLine(memoryInfo)}
-                </pre>
-              )}
-            </div>
+            {memoryInfo && (
+              <pre className="text-[11px] font-mono text-text-muted whitespace-pre-wrap break-all">
+                {memoryInfo.error
+                  ? `Error: ${memoryInfo.error}`
+                  : memoryLine(memoryInfo)}
+              </pre>
+            )}
           </div>
         </Card>
 
