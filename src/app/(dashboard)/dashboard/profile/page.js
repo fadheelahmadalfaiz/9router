@@ -10,6 +10,16 @@ import { APP_CONFIG } from "@/shared/constants/config";
 import { LOCALE_COOKIE, normalizeLocale } from "@/i18n/config";
 import { LOCALE_FLAGS } from "@/shared/constants/locales";
 
+function memoryLine(m) {
+  if (!m) return "";
+  const fb = m.inMemory?.freebuff || {};
+  return [
+    `DB: ${m.dbPath || "-"} (${m.dbSizeMB || "-"})`,
+    `Data dir: ${m.dataDirSizeMB || "-"}`,
+    `In-memory: fitness=${m.inMemory?.fitnessPools ?? 0} pool(s) · geo=${m.inMemory?.geoPools ?? 0} pool(s) · freebuff sessions=${fb.sessions ?? 0}, locks=${fb.modelLocks ?? 0}, pool-limits=${fb.poolLimits ?? 0}`,
+  ].join("\n");
+}
+
 function getLocaleFromCookie() {
   if (typeof document === "undefined") return "en";
   const cookie = document.cookie
@@ -49,6 +59,8 @@ export default function ProfilePage() {
   const [oidcRedirectUri, setOidcRedirectUri] = useState("/api/auth/oidc/callback");
   const [oidcExpanded, setOidcExpanded] = useState(false);
   const importFileRef = useRef(null);
+  const [memoryInfo, setMemoryInfo] = useState(null);
+  const [memoryLoading, setMemoryLoading] = useState(false);
   const [proxyForm, setProxyForm] = useState({
     outboundProxyEnabled: false,
     outboundProxyUrl: "",
@@ -563,6 +575,19 @@ export default function ProfilePage() {
     setShutdownOpen(false);
   };
 
+  const handleMemoryCheck = async () => {
+    setMemoryLoading(true);
+    try {
+      const res = await fetch("/api/system/memory", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setMemoryInfo(await res.json());
+    } catch (err) {
+      setMemoryInfo({ error: err.message });
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
   const handleLogout = async () => {
     try {
       const res = await fetch("/api/auth/logout", { method: "POST" });
@@ -649,6 +674,24 @@ export default function ProfilePage() {
                 {dbStatus.message}
               </p>
             )}
+            <div className="flex flex-col gap-1.5 mt-1 pt-3 border-t border-border">
+              <Button
+                variant="outline"
+                icon="memory"
+                onClick={handleMemoryCheck}
+                loading={memoryLoading}
+                className="w-full sm:w-auto self-start"
+              >
+                Check Size Memory
+              </Button>
+              {memoryInfo && (
+                <pre className="text-[11px] font-mono text-text-muted whitespace-pre-wrap break-all">
+                  {memoryInfo.error
+                    ? `Error: ${memoryInfo.error}`
+                    : memoryLine(memoryInfo)}
+                </pre>
+              )}
+            </div>
           </div>
         </Card>
 

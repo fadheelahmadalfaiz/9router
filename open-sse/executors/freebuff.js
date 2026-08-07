@@ -369,6 +369,16 @@ export function resetSessionCache() {
   inflight.clear();
 }
 
+// Snapshot sizes of in-memory freebuff state (for the dashboard memory panel).
+export function sessionStateSize() {
+  return {
+    sessions: sessionCache.size,
+    inflight: inflight.size,
+    modelLocks: modelLockCooldowns.size,
+    poolLimits: poolLimitCooldowns.size,
+  };
+}
+
 // Periodic sweeper: drop stale session rows + expired cooldowns so long-running
 // servers never accumulate state for accounts/models no longer in use.
 // Returns how many entries were removed.

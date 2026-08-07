@@ -253,7 +253,7 @@ export default function ProxyFitnessPage() {
                 onChange={handleGeoToggle}
                 disabled={geoUpdating}
                 label="Geo probe"
-                description="Probe egress IP/country per pool ±30 min (pemakaian kuota geo-API)"
+                description="Probe egress IP/country per pool every ~30 min (uses geo-API quota)"
               />
               <Button variant="secondary" size="sm" icon="refresh" onClick={fetchAll}>Refresh</Button>
             </div>
