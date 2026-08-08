@@ -18,6 +18,7 @@ const OPTIONAL_FIELDS = [
   "authCooldownUntil", "modelCooldowns", "consecutiveStrikes", "modelStrikes",
   "lastUsedAt", "lastPoolError", "lastPoolErrorAt", "modelQuotaStatus",
   "antigravity503RetryCount",
+  "proxyRotationStrategy", "proxyPoolIds",
 ];
 
 function rowToConn(row) {

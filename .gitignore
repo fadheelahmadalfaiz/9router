@@ -60,7 +60,6 @@ PUBLIC.md
 Thanks.md
 PUBLIC.en.md
 PR/*
-package-lock.json
 
 
 #Ignore vscode AI rules
@@ -77,4 +76,12 @@ gitbook/README.md
 open-sse.old/
 .graphifyignore
 graphify-out/*
+
+# Local-only working dirs (notes, vendored repos, scripts, skills)
+.claude/
+.docs/
+.repo/
+.script/
+.codegraph/
+.PR/
 .next-analyze/*

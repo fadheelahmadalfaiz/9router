@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
+import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
 import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
@@ -81,6 +82,7 @@ export default function ProviderDetailPage() {
   const [thinkingMode, setThinkingMode] = useState("auto");
   const [autoPing, setAutoPing] = useState({ enabled: false, connections: {} });
   const [suggestedModels, setSuggestedModels] = useState([]);
+  const [liveModels, setLiveModels] = useState([]);
   const [kiloFreeModels, setKiloFreeModels] = useState([]);
   const [disabledModelIds, setDisabledModelIds] = useState([]);
   const [confirmState, setConfirmState] = useState(null);
@@ -156,7 +158,10 @@ export default function ProviderDetailPage() {
   const isOAuth = !!OAUTH_PROVIDERS[providerId] || !!FREE_PROVIDERS[providerId] || authModes.includes("oauth");
   const supportsApiKeyAuth = !!APIKEY_PROVIDERS[providerId] || authModes.includes("apikey");
   const isFreeNoAuth = !!FREE_PROVIDERS[providerId]?.noAuth;
-  const models = getModelsByProviderId(providerId);
+  const staticModels = getModelsByProviderId(providerId);
+  const models = providerId === "cursor" && liveModels.length > 0
+    ? liveModels
+    : staticModels;
   const providerAlias = getProviderAlias(providerId);
   
   const isOpenAICompatible = isOpenAICompatibleProvider(providerId);
@@ -166,8 +171,13 @@ export default function ProviderDetailPage() {
   const oauthConnectionLabel =
     providerId === "xai" ? "Grok Build OAuth"
     : providerId === "grok-cli" ? "Grok CLI Device Login"
+    : providerId === "kimi" ? "Kimi Coding OAuth"
     : "OAuth";
-  const apiKeyConnectionLabel = providerId === "xai" ? "xAI API Key" : "API Key";
+  const apiKeyConnectionLabel =
+    providerId === "xai" ? "xAI API Key"
+    : providerId === "kimi" ? "Kimi API Key"
+    : providerId === "qoder" ? "PAT"
+    : "API Key";
   // Resolve suffix "(level)" for a model when a thinking level is picked and the model supports it.
   const resolveThinkingSuffix = (modelId) => {
     if (!thinkingMode || thinkingMode === "auto") return null;
@@ -464,6 +474,34 @@ export default function ProviderDetailPage() {
       fetchDisabledModels();
     });
   }, [fetchConnections, fetchAliases, fetchCustomModels, fetchDisabledModels]);
+
+  // Cursor's model availability is account-specific and changes frequently.
+  // Load the active account's live catalog for the dashboard; the static
+  // registry remains the fallback while the request is pending or unavailable.
+  useEffect(() => {
+    if (providerId !== "cursor") {
+      setLiveModels([]);
+      return;
+    }
+
+    const connection = connections.find((item) => item.isActive !== false);
+    if (!connection?.id) {
+      setLiveModels([]);
+      return;
+    }
+
+    let cancelled = false;
+    fetch(`/api/providers/${connection.id}/models`, { cache: "no-store" })
+      .then(async (res) => ({ ok: res.ok, data: await res.json() }))
+      .then(({ ok, data }) => {
+        if (!cancelled && ok && Array.isArray(data.models) && data.models.length > 0) {
+          setLiveModels(data.models);
+        }
+      })
+      .catch(() => {});
+
+    return () => { cancelled = true; };
+  }, [providerId, connections]);
 
   // Fetch suggested models from provider's public API (if configured)
   useEffect(() => {
@@ -972,17 +1010,39 @@ export default function ProviderDetailPage() {
                   onToggle: (on) => handleAutoPingConnection(conn.id, on),
                   provider: providerId,
                 } : null}
-                onUpdateProxy={async (proxyPoolId) => {
+                onUpdateProxy={async (proxyConfig) => {
                   try {
+                    // Support both new format (object) and legacy format (string/null)
+                    const updatePayload = typeof proxyConfig === 'object' && proxyConfig !== null
+                      ? {
+                          proxyPoolIds: proxyConfig.proxyPoolIds || [],
+                          proxyRotationStrategy: proxyConfig.proxyRotationStrategy || "none",
+                        }
+                      : {
+                          // Legacy single-proxy format
+                          proxyPoolId: proxyConfig || null,
+                        };
+
                     const res = await fetch(`/api/providers/${conn.id}`, {
                       method: "PUT",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ proxyPoolId: proxyPoolId || null }),
+                      body: JSON.stringify(updatePayload),
                     });
                     if (res.ok) {
                       setConnections(prev => prev.map(c =>
                         c.id === conn.id
-                          ? { ...c, providerSpecificData: { ...c.providerSpecificData, proxyPoolId: proxyPoolId || null } }
+                          ? { 
+                              ...c, 
+                              providerSpecificData: { 
+                                ...c.providerSpecificData, 
+                                ...(updatePayload.proxyPoolIds !== undefined ? {
+                                  proxyPoolIds: updatePayload.proxyPoolIds,
+                                  proxyRotationStrategy: updatePayload.proxyRotationStrategy,
+                                } : {
+                                  proxyPoolId: updatePayload.proxyPoolId,
+                                })
+                              } 
+                            }
                           : c
                       ));
                     }
@@ -1335,7 +1395,7 @@ export default function ProviderDetailPage() {
     if (isAnthropicCompatible) {
       return "/providers/anthropic-m.png";
     }
-    return `/providers/${providerInfo.id}.png`;
+    return getProviderIconSrc(providerInfo.id);
   };
 
   const autoTestCurrentPosition = Math.min(autoTestProgress.completed + 1, autoTestProgress.total);
@@ -1361,7 +1421,7 @@ export default function ProviderDetailPage() {
             className="flex size-12 shrink-0 items-center justify-center rounded-lg"
             style={{ backgroundColor: `${providerInfo.color}15` }}
           >
-            {headerImgError ? (
+            {headerImgError || !getHeaderIconPath() ? (
               <span className="text-sm font-bold" style={{ color: providerInfo.color }}>
                 {providerInfo.textIcon || providerInfo.id.slice(0, 2).toUpperCase()}
               </span>
@@ -1373,7 +1433,12 @@ export default function ProviderDetailPage() {
                 height={48}
                 className="max-h-12 max-w-12 rounded-lg object-contain"
                 sizes="48px"
-                onError={() => setHeaderImgError(true)}
+                onError={() => {
+                  markProviderIconMissing(providerInfo.id);
+                  setHeaderImgError(true);
+                }}
+              loading="lazy"
+              decoding="async"
               />
             )}
           </div>
@@ -1833,6 +1898,7 @@ export default function ProviderDetailPage() {
         website={providerInfo?.website}
         proxyPools={proxyPools}
         error={addConnectionError}
+        existingNames={connections.map((c) => c.name).filter(Boolean)}
         onSave={handleSaveApiKey}
         onBulkDone={fetchConnections}
         onClose={() => {

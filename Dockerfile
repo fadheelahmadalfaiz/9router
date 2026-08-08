@@ -7,9 +7,9 @@ FROM base AS builder
 
 RUN apk --no-cache upgrade && apk --no-cache add python3 make g++ linux-headers
 
-COPY package.json ./
+COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
-  npm install
+  npm ci
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -48,6 +48,10 @@ RUN apk --no-cache upgrade && apk --no-cache add su-exec && \
   chmod +x /entrypoint.sh
 
 EXPOSE 20128
+
+# Health: Next serves /api/health (dashboardGuard public path).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:20128/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "custom-server.js"]

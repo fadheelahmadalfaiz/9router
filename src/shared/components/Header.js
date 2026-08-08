@@ -8,10 +8,10 @@ import ProviderIcon from "@/shared/components/ProviderIcon";
 import HeaderMenu from "@/shared/components/HeaderMenu";
 import HeaderLanguage from "@/shared/components/HeaderLanguage";
 import ThemeToggle from "@/shared/components/ThemeToggle";
-import DonateModal from "@/shared/components/DonateModal";
 import { useHeaderSearchStore } from "@/store/headerSearchStore";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { MEDIA_PROVIDER_KINDS, AI_PROVIDERS } from "@/shared/constants/providers";
+import { getProviderIconSrc } from "@/shared/utils/providerIcon";
 import { translate } from "@/i18n/runtime";
 
 const getPageInfo = (pathname) => {
@@ -30,7 +30,7 @@ const getPageInfo = (pathname) => {
       breadcrumbs: [
         { label: "Media Providers", href: `/dashboard/media-providers/${kindId}` },
         { label: kindConfig?.label || kindId, href: `/dashboard/media-providers/${kindId}` },
-        { label: provider?.name || providerId, image: `/providers/${providerId}.png` },
+        { label: provider?.name || providerId, image: getProviderIconSrc(providerId) },
       ],
     };
   }
@@ -62,7 +62,7 @@ const getPageInfo = (pathname) => {
           { label: "Providers", href: "/dashboard/providers" },
           {
             label: providerInfo.name,
-            image: `/providers/${providerInfo.id}.png`,
+            image: getProviderIconSrc(providerInfo.id),
           },
         ],
       };
@@ -182,7 +182,6 @@ export default function Header({ onMenuClick, showMenuButton = true }) {
   const pathname = usePathname();
   const [displayName, setDisplayName] = useState("");
   const [loginMethod, setLoginMethod] = useState("");
-  const [donateOpen, setDonateOpen] = useState(false);
 
   // Memoize page info to prevent unnecessary recalculations
   const pageInfo = useMemo(() => getPageInfo(pathname), [pathname]);
@@ -312,19 +311,20 @@ export default function Header({ onMenuClick, showMenuButton = true }) {
           </div>
         )}
         <HeaderSearch />
-        <button
-          onClick={() => setDonateOpen(true)}
-          className="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-pink-500/30 bg-pink-500/10 text-pink-600 dark:text-pink-400 hover:bg-pink-500/20 transition-colors text-sm font-medium"
-          aria-label="Donate"
+        <a
+          href="https://github.com/mhiqrambg/9router-mibp-version"
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors text-sm font-medium"
+          aria-label="MIBP Edition"
         >
-          <span className="material-symbols-outlined text-[18px]">volunteer_activism</span>
-          <span className="hidden sm:inline">Donate</span>
-        </button>
+          <span className="material-symbols-outlined text-[18px]">code</span>
+          <span className="hidden sm:inline">MIBP Edition</span>
+        </a>
         <ThemeToggle />
         <HeaderLanguage />
         <HeaderMenu onLogout={handleLogout} />
       </div>
-      <DonateModal isOpen={donateOpen} onClose={() => setDonateOpen(false)} />
     </header>
   );
 }

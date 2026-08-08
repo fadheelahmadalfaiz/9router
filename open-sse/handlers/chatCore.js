@@ -1,6 +1,6 @@
 import { detectFormat, getTargetFormat, resolveTransport } from "../services/provider.js";
 import { translateRequest } from "../translator/index.js";
-import { stripThinkingSuffix } from "../translator/concerns/thinkingUnified.js";
+import { applyThinking, extractThinking, stripThinkingSuffix } from "../translator/concerns/thinkingUnified.js";
 import { FORMATS } from "../translator/formats.js";
 import { normalizeClaudePassthrough } from "../translator/formats/claude.js";
 import { createStreamController } from "../utils/streamHandler.js";
@@ -9,10 +9,11 @@ import { createRequestLogger } from "../utils/requestLogger.js";
 import { getModelTargetFormat, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
-import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, TOKEN_SAVER_HEADER } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
 import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { getExecutor } from "../executors/index.js";
+import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
 import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
@@ -21,14 +22,19 @@ import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.j
 import { dedupeTools } from "../utils/toolDeduper.js";
 import { injectCaveman } from "../rtk/caveman.js";
 import { injectPonytail } from "../rtk/ponytail.js";
-import { compressMessages } from "../rtk/index.js";
-import { compressWithHeadroom, formatHeadroomSizeLog, isHeadroomPhantomSavings } from "../rtk/headroom.js";
+import { compressMessages, formatRtkLog } from "../rtk/index.js";
+import { compressWithHeadroom, formatHeadroomLog, formatHeadroomSizeLog, isHeadroomPhantomSavings } from "../rtk/headroom.js";
 import { compressWithPxpipe } from "../rtk/pxpipe.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
-import { extractThinking } from "../translator/concerns/thinkingUnified.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
+import { markPoolUnfit, clearPoolUnfit } from "../services/proxyPoolFitness.js";
+
+// Pool-scoped failure retry: when an executor tags an error as belonging to a
+// proxy pool (region gate, dead proxy, …), re-resolve the proxy config
+// excluding that pool and retry instead of failing the whole account.
+const MAX_POOL_RETRIES = 2;
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -37,7 +43,27 @@ import { resolveSessionId } from "../utils/sessionManager.js";
  * @param {object} options.credentials - Provider credentials
  * @param {string} options.sourceFormatOverride - Override detected source format (e.g. "openai-responses")
  */
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking }) {
+/**
+ * Remove translator-internal continuity fields from the outbound upstream
+ * body. The Responses→Chat request translator stashes reasoning
+ * `encrypted_content` on assistant messages so a later openai→responses
+ * round-trip can restore the store=false continuity blob; that stash must
+ * never reach an upstream provider. Chat-native proxies reject the unknown
+ * assistant-message field and answer every turn with a literal "400" body
+ * (observed with multi-turn Codex sessions via OpenAI-compatible nodes).
+ */
+export function stripContinuityFields(body) {
+  if (!body || !Array.isArray(body.messages)) return body;
+  for (const msg of body.messages) {
+    if (msg && typeof msg === "object") {
+      delete msg.encrypted_content;
+      delete msg.reasoning_encrypted_content;
+    }
+  }
+  return body;
+}
+
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, resolveProxyConfig }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -60,7 +86,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const modelTargetFormat = getModelTargetFormat(alias, model);
   // Multi-endpoint providers: pick transport matching sourceFormat → zero translation
   const runtimeTransport = resolveTransport(provider, sourceFormat);
-  const targetFormat = modelTargetFormat || runtimeTransport?.format || getTargetFormat(provider);
+  const targetFormat = modelTargetFormat || runtimeTransport?.format || getTargetFormat(provider, credentials);
   if (runtimeTransport && credentials) credentials.runtimeTransport = runtimeTransport;
   const stripList = getModelStrip(alias, model);
   const upstreamModel = getModelUpstreamId(alias, model);
@@ -133,9 +159,22 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   let translatedBody;
   let toolNameMap;
+  let customToolNames;
   if (passthrough) {
     log?.debug?.("PASSTHROUGH", `${clientTool} → ${provider} | native lossless`);
     translatedBody = { ...body, model: stripThinkingSuffix(upstreamModel) };
+    if (provider === "codex") {
+      const suffixThinking = {};
+      applyThinking(sourceFormat, upstreamModel, suffixThinking, provider);
+      if (suffixThinking.reasoning_effort) {
+        const reasoning = translatedBody.reasoning;
+        translatedBody.reasoning = {
+          ...(reasoning && typeof reasoning === "object" && !Array.isArray(reasoning) ? reasoning : {}),
+          effort: suffixThinking.reasoning_effort,
+        };
+        delete translatedBody.reasoning_effort;
+      }
+    }
     // Normalize newer Cowork/CC beta shapes (adaptive thinking, mid-conversation system) the API rejects
     if (clientTool === "claude") normalizeClaudePassthrough(translatedBody, translatedBody.model);
   } else {
@@ -146,7 +185,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
     toolNameMap = translatedBody._toolNameMap;
     delete translatedBody._toolNameMap;
+    customToolNames = translatedBody._customToolNames;
+    delete translatedBody._customToolNames;
     translatedBody.model = stripThinkingSuffix(upstreamModel);
+    stripContinuityFields(translatedBody);
   }
 
   // Dedupe duplicate built-in tools when equivalent MCP tools are present (Claude clients only).
@@ -168,7 +210,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     const msgN = translatedBody.messages?.length || translatedBody.input?.length || translatedBody.contents?.length || body.messages?.length || body.input?.length || 0;
     const toolN = translatedBody.tools?.length || body.tools?.length || 0;
     const fmtStr = passthrough ? `FMT: ${sourceFormat} (passthrough)` : `FMT: ${sourceFormat}→${targetFormat}`;
-    const think = log.fmtThink?.(extractThinking(translatedBody));
+    const showThinking = provider !== "grok-cli" || supportsGrokCliReasoningEffort(model);
+    const think = showThinking ? log.fmtThink?.(extractThinking(translatedBody)) : null;
     const acc = credentials?.connectionName || credentials?.connectionId?.slice(0, 8) || "-";
     const parts = [
       `POST ${clientModel} → ${provider}/${model}`,
@@ -188,40 +231,37 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     delete translatedBody.tools;
   }
 
-  // Token-saver summary parts, printed as one "⚙" line at the end (only active ones)
-  const xf = [];
+  // Per-request opt-out: client can bypass all token savers via header
+  const tokenSaverEnabled = clientRawRequest?.headers?.[TOKEN_SAVER_HEADER]?.toLowerCase() !== "off";
 
   // RTK: compress tool_result content
-  const rtkStats = compressMessages(translatedBody, rtkEnabled);
-  if (rtkStats?.hits?.length) {
-    const saved = rtkStats.bytesBefore - rtkStats.bytesAfter;
-    const pct = rtkStats.bytesBefore > 0 ? ((saved / rtkStats.bytesBefore) * 100).toFixed(0) : "0";
-    xf.push(`RTK −${saved}B(${pct}%)`);
-  }
+  const rtkStats = compressMessages(translatedBody, tokenSaverEnabled && rtkEnabled);
+  const rtkLine = formatRtkLog(rtkStats);
+  if (rtkLine) console.log(rtkLine);
 
   // Headroom: optional external proxy compression; fail open if proxy is absent.
   const headroomDiagnostics = {};
-  const headroomStats = await compressWithHeadroom(translatedBody, { enabled: headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, diagnostics: headroomDiagnostics });
-  if (headroomStats) {
-    const before = headroomStats.tokens_before || 0;
-    const delta = headroomStats.tokens_saved || 0;
-    const pct = before > 0 ? ((delta / before) * 100).toFixed(1) : "0";
-    xf.push(`HEADROOM −${delta}tok(${pct}%)`);
+  const headroomStats = await compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, diagnostics: headroomDiagnostics });
+  const headroomLine = formatHeadroomLog(headroomStats);
+  const headroomSizeLine = formatHeadroomSizeLog(headroomDiagnostics);
+  if (headroomLine) {
+    log?.info?.("HEADROOM", `${headroomLine}${headroomSizeLine ? ` | ${headroomSizeLine}` : ""}`);
     if (isHeadroomPhantomSavings(headroomStats, headroomDiagnostics)) {
       log?.warn?.("HEADROOM", `reported token delta, but outbound JSON shrank <5%; provider may bill near-original payload | ${formatHeadroomSizeLog(headroomDiagnostics)}`);
     }
-  } else if (headroomEnabled) {
-    log?.warn?.("HEADROOM", `skipped: ${headroomDiagnostics.reason || "compression unavailable"}${headroomDiagnostics.endpoint ? ` (${headroomDiagnostics.endpoint})` : ""}`);
-  }
+  } else if (tokenSaverEnabled && headroomEnabled) log?.warn?.("HEADROOM", `skipped: ${headroomDiagnostics.reason || "compression unavailable"}${headroomDiagnostics.endpoint ? ` (${headroomDiagnostics.endpoint})` : ""}`);
+
+  // Token-saver flags accumulator for the single "⚙" log line below.
+  const xf = [];
 
   // Caveman: inject terse-style system prompt
-  if (cavemanEnabled && cavemanLevel) {
+  if (tokenSaverEnabled && cavemanEnabled && cavemanLevel) {
     injectCaveman(translatedBody, finalFormat, cavemanLevel);
     xf.push(`CAVEMAN:${cavemanLevel}`);
   }
 
   // Ponytail: inject lazy-senior-dev system prompt
-  if (ponytailEnabled && ponytailLevel) {
+  if (tokenSaverEnabled && ponytailEnabled && ponytailLevel) {
     injectPonytail(translatedBody, finalFormat, ponytailLevel);
     xf.push(`PONYTAIL:${ponytailLevel}`);
   }
@@ -257,16 +297,23 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     log, provider, model, reqTag
   });
 
-  const proxyOptions = {
-    connectionProxyEnabled: credentials?.providerSpecificData?.connectionProxyEnabled === true,
-    connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
-    connectionNoProxy: credentials?.providerSpecificData?.connectionNoProxy || "",
-    vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
-  };
+  // Build proxy options from the resolved provider-specific data. `strictProxy`
+  // is forced for freebuff so a dead/limited pool can never leak the request
+  // to the caller's real IP (the freebuff session tier is per-egress-IP).
+  const buildProxyOptions = (psd = {}) => ({
+    connectionProxyEnabled: psd?.connectionProxyEnabled === true,
+    connectionProxyUrl: psd?.connectionProxyUrl || "",
+    connectionNoProxy: psd?.connectionNoProxy || "",
+    vercelRelayUrl: psd?.vercelRelayUrl || "",
+    strictProxy: psd?.strictProxy === true || provider === "freebuff",
+    proxyPoolId: psd?.proxyPoolId || psd?.connectionProxyPoolId || null,
+  });
+
+  let proxyOptions = buildProxyOptions(credentials?.providerSpecificData || {});
 
   if (proxyOptions.vercelRelayUrl) {
     const connectionName = credentials?.connectionName || credentials?.connectionId || "unknown";
-    const poolId = credentials?.providerSpecificData?.connectionProxyPoolId || "none";
+    const poolId = proxyOptions.proxyPoolId || "none";
     log?.info?.("PROXY", `${provider.toUpperCase()} | ${model} | conn=${connectionName} | pool=${poolId} | vercel-relay=${proxyOptions.vercelRelayUrl}`);
   } else if (proxyOptions.connectionProxyEnabled && proxyOptions.connectionProxyUrl) {
     let maskedProxyUrl = proxyOptions.connectionProxyUrl;
@@ -280,7 +327,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       // Keep raw if URL parsing fails
     }
 
-    const poolId = credentials?.providerSpecificData?.connectionProxyPoolId || "none";
+    const poolId = proxyOptions.proxyPoolId || "none";
     const connectionName = credentials?.connectionName || credentials?.connectionId || "unknown";
     log?.info?.("PROXY", `${provider.toUpperCase()} | ${model} | conn=${connectionName} | pool=${poolId} | url=${maskedProxyUrl}`);
   }
@@ -290,14 +337,70 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     log?.debug?.("PROXY", `${provider.toUpperCase()} | ${model} | conn=${connectionName} | no_proxy=${proxyOptions.connectionNoProxy}`);
   }
 
+  // Execute request — with pool-scoped retry: a failed pool (region gate,
+  // per-IP limit, dead proxy) is marked unfit and the request retried via
+  // another pool instead of failing the account. Covers both thrown errors
+  // (executor.execute) and non-ok responses declared poolScoped via
+  // parseError — poolId/scope are completed here from proxyOptions.
+  const proxyScope = `${provider}::${model}`;
+  let parsedNonOk = null;
+
+  const tryNextPool = async (poolScoped, reasonMsg) => {
+    const failed = {
+      poolId: poolScoped?.poolId || proxyOptions.proxyPoolId || null,
+      scope: poolScoped?.scope || proxyScope,
+      reason: poolScoped?.reason || "pool-scoped",
+    };
+    markPoolUnfit(failed.poolId, failed.scope, undefined, failed.reason);
+    log?.warn?.("PROXY", `${provider.toUpperCase()} | pool ${failed.poolId || "?"} unfit for ${failed.scope} (${failed.reason}) — retry with another pool. ${reasonMsg || ""}`);
+    try {
+      const resolved = await resolveProxyConfig(credentials, [failed.poolId]);
+      if (resolved?.proxyPoolId) {
+        credentials.providerSpecificData = { ...(credentials.providerSpecificData || {}), ...resolved };
+        proxyOptions = buildProxyOptions(credentials.providerSpecificData);
+        return true;
+      }
+    } catch (resolverError) {
+      // A resolver failure must not mask the original pool error.
+      log?.warn?.("PROXY", `${provider.toUpperCase()} | pool re-resolve failed: ${resolverError.message}`);
+    }
+    return false;
+  };
+
+  const executeWithPoolFallback = async (attempt = 0) => {
+    let result;
+    try {
+      result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
+    } catch (error) {
+      if (error?.poolScoped && typeof resolveProxyConfig === "function" && attempt < MAX_POOL_RETRIES) {
+        if (await tryNextPool(error.poolScoped, error.message)) return executeWithPoolFallback(attempt + 1);
+      }
+      throw error;
+    }
+    // Non-ok response that the executor declared pool/IP-scoped (e.g. opencode
+    // free per-IP limit) — parse once, retry via another pool when possible.
+    if (!result.response.ok) {
+      const parsed = await parseUpstreamError(result.response, executor);
+      if (parsed.poolScoped && typeof resolveProxyConfig === "function" && attempt < MAX_POOL_RETRIES) {
+        if (await tryNextPool(parsed.poolScoped, parsed.message)) return executeWithPoolFallback(attempt + 1);
+      }
+      parsedNonOk = parsed;
+    }
+    return result;
+  };
+
   // Execute request
   let providerResponse, providerUrl, providerHeaders, finalBody;
+  // Most executors return their registry format. Cursor AgentService is an
+  // exception: it is decoded by the executor into OpenAI-compatible output.
+  let providerResponseFormat = targetFormat;
   try {
-    const result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
+    const result = await executeWithPoolFallback();
     providerResponse = result.response;
     providerUrl = result.url;
     providerHeaders = result.headers;
     finalBody = result.transformedBody;
+    providerResponseFormat = result.responseFormat || targetFormat;
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false, true);
@@ -319,15 +422,26 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
     const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
     if (log?.errorLine) {
-      log.errorLine(reqTag, "✗", `ERROR 502 · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    ${errMsg}${error.stack ? `\n    ${error.stack}` : ""}`);
+      log.errorLine(reqTag, "✗", `ERROR 502 · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    ${errMsg}`);
     }
-    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
+    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg, error?.resetsAtMs || undefined);
   }
 
   // Handle 401/403 - try token refresh (skip for noAuth providers)
   if (!executor.noAuth && (providerResponse.status === HTTP_STATUS.UNAUTHORIZED || providerResponse.status === HTTP_STATUS.FORBIDDEN)) {
     try {
-      const newCredentials = await refreshWithRetry(() => executor.refreshCredentials(credentials, log), 3, log);
+      // Mutate credentials after each successful refresh: rotating refresh_token
+      // providers (xAI/grok-cli) issue a new RT on every refresh; without this,
+      // refreshWithRetry's 2nd/3rd attempt reuses the already-consumed RT →
+      // invalid_grant → auth_failed retryable=false.
+      const newCredentials = await refreshWithRetry(async () => {
+        const result = await executor.refreshCredentials(credentials, log);
+        if (result?.refreshToken && result.refreshToken !== credentials.refreshToken) {
+          if (result.accessToken) credentials.accessToken = result.accessToken;
+          credentials.refreshToken = result.refreshToken;
+        }
+        return result;
+      }, 3, log);
       if (newCredentials?.accessToken || newCredentials?.copilotToken) {
         if (log?.line) log.line(reqTag, "🔑", `TOKEN REFRESHED · ${provider}/${model}`);
         Object.assign(credentials, newCredentials);
@@ -336,7 +450,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
         }
         try {
           const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
-          if (retryResult.response.ok) { providerResponse = retryResult.response; providerUrl = retryResult.url; }
+          if (retryResult.response.ok) {
+            providerResponse = retryResult.response;
+            providerUrl = retryResult.url;
+            providerResponseFormat = retryResult.responseFormat || targetFormat;
+          }
         } catch { log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`); }
       } else {
         log?.warn?.("TOKEN", `${provider.toUpperCase()} | refresh failed`);
@@ -349,7 +467,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Provider returned error
   if (!providerResponse.ok) {
     trackPendingRequest(model, provider, connectionId, false, true);
-    const { statusCode, message, resetsAtMs } = await parseUpstreamError(providerResponse, executor);
+    const { statusCode, message, resetsAtMs } = parsedNonOk || await parseUpstreamError(providerResponse, executor);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -377,20 +495,20 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Provider forced streaming but client wants JSON
   if (!clientRequestedStreaming && providerRequiresStreaming) {
-    const result = await handleForcedSSEToJson({ ...sharedCtx, providerResponse, sourceFormat, trackDone, appendLog });
+    const result = await handleForcedSSEToJson({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, customToolNames, trackDone, appendLog });
     if (result) { streamController.handleComplete(); return result; }
   }
 
   // True non-streaming response
   if (!stream) {
-    const result = await handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat, reqLogger, toolNameMap, trackDone, appendLog });
+    const result = await handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, reqLogger, toolNameMap, customToolNames, trackDone, appendLog });
     streamController.handleComplete();
     return result;
   }
 
   // Streaming response
   const { onStreamComplete, streamDetailId } = buildOnStreamComplete({ ...sharedCtx });
-  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, streamController, onStreamComplete, streamDetailId });
+  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId });
 }
 
 export function isTokenExpiringSoon(expiresAt, bufferMs = 5 * 60 * 1000) {

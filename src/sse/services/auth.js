@@ -3,6 +3,7 @@ import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/con
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
+import { recordAntigravityAccountSuccess, recordAntigravityQuotaFailure, recordAntigravityAuthFailure } from "@/lib/accountPool/antigravityPool";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -43,6 +44,15 @@ function isAntigravityAuthStatus(status) {
   return status === 401 || status === 403;
 }
 
+const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
+
+function githubMonthlyResetMs(status, errorText, provider) {
+  if (resolveProviderId(provider) !== "github" || Number(status) !== 402) return null;
+  if (!String(errorText || "").toLowerCase().includes(GITHUB_MONTHLY_USAGE_LIMIT)) return null;
+  const now = new Date();
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+}
+
 /**
  * Get provider credentials from localDb
  * Filters out unavailable accounts and returns the selected account based on strategy
@@ -73,10 +83,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const override = (settings.providerStrategies || {})[providerId] || {};
       const strategy = override.rotateStrategy || "none";
       let pickedId = override.proxyPoolId || null;
+      let poolIds = [];
       if (strategy !== "none") {
         const allPools = await getProxyPools({ isActive: true });
-        const poolIds = allPools.filter(p => p.proxyUrl).map(p => p.id);
-        pickedId = pickProxyPoolId(poolIds, strategy, providerId);
+        poolIds = allPools.filter(p => p.proxyUrl).map(p => p.id);
+        // Scope region-aware ("smart") filtering to this provider/model so
+        // pools marked unfit here are skipped.
+        const scope = `${providerId}::${model || "*"}`;
+        pickedId = pickProxyPoolId(poolIds, strategy, providerId, { scope });
+      } else if (override.proxyPoolId) {
+        poolIds = [override.proxyPoolId];
       }
       const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: pickedId || "" });
       return {
@@ -90,6 +106,13 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           connectionNoProxy: resolvedProxy.connectionNoProxy,
           connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
           vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
+          proxyPoolId: resolvedProxy.proxyPoolId || null,
+          strictProxy: resolvedProxy.strictProxy === true,
+          // Let chatCore's pool-scoped retry rotate across the same candidate
+          // pool set (excluding the failed pool) instead of reusing it — this
+          // is what makes per-IP limit retries work for no-auth providers.
+          proxyPoolIds: poolIds,
+          proxyRotationStrategy: strategy,
         },
       };
     }
@@ -198,7 +221,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       connection = availableConnections[0];
     }
 
-    const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+    // Scope the region-aware picker to this provider/model (e.g. freebuff::gpt-5.6-luna)
+    const psdForProxy = connection.providerSpecificData?.proxyPoolIds?.length
+      ? { ...connection.providerSpecificData, proxyPoolScope: `${providerId}::${model || ""}` }
+      : connection.providerSpecificData;
+    const resolvedProxy = await resolveConnectionProxyConfig(psdForProxy || {}, connection.id);
 
     return {
       authType: connection.authType,
@@ -219,6 +246,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         connectionNoProxy: resolvedProxy.connectionNoProxy,
         connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
         vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
+        proxyPoolId: resolvedProxy.proxyPoolId || null,
+        strictProxy: resolvedProxy.strictProxy === true,
       },
       connectionId: connection.id,
       // Include current status for optimization check
@@ -254,9 +283,16 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     await persistAntigravityPoolUpdate(conn, (connection, settings) => recordAntigravityAuthFailure(connection, { settings, statusCode: status }));
   }
 
+  // GitHub premium-request exhaustion is account-wide until the next UTC month.
+  const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
+
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
   let shouldFallback, cooldownMs, newBackoffLevel;
-  if (resetsAtMs && resetsAtMs > Date.now()) {
+  if (githubResetAtMs) {
+    shouldFallback = true;
+    cooldownMs = githubResetAtMs - Date.now();
+    newBackoffLevel = 0;
+  } else if (resetsAtMs && resetsAtMs > Date.now()) {
     shouldFallback = true;
     cooldownMs = Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
     newBackoffLevel = 0;
@@ -266,7 +302,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
-  const lockUpdate = buildModelLockUpdate(model, cooldownMs);
+  const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
@@ -329,7 +365,13 @@ export async function clearAccountError(connectionId, currentConnection, model =
 
   // Only reset error state if no active locks remain
   if (remainingActiveLocks.length === 0) {
-    Object.assign(clearObj, { testStatus: "active", lastError: null, lastErrorAt: null, backoffLevel: 0 });
+    Object.assign(clearObj, {
+      testStatus: "active",
+      lastError: null,
+      errorCode: null,
+      lastErrorAt: null,
+      backoffLevel: 0
+    });
   }
 
   await updateProviderConnection(connectionId, clearObj);

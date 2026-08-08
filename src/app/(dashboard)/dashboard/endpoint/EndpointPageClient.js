@@ -271,11 +271,26 @@ export default function APIPageClient({ machineId }) {
 
   const fetchData = async () => {
     try {
-      const keysRes = await fetch("/api/keys");
-      const keysData = await keysRes.json();
-      if (keysRes.ok) {
-        setKeys(keysData.keys || []);
+      const fetchKeys = async () => {
+        const res = await fetch("/api/keys");
+        if (!res.ok) return [];
+        const data = await res.json();
+        return data.keys || [];
+      };
+
+      let existing = await fetchKeys();
+      // Auto-provision a default key for first-time users so the endpoint works out of the box.
+      if (existing.length === 0) {
+        try {
+          const createRes = await fetch("/api/keys", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "Default Key" }),
+          });
+          if (createRes.ok) existing = await fetchKeys();
+        } catch { /* fall through to empty render */ }
       }
+      setKeys(existing);
     } catch (error) {
       console.log("Error fetching data:", error);
     } finally {
