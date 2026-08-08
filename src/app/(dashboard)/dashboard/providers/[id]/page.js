@@ -479,26 +479,28 @@ export default function ProviderDetailPage() {
   // Load the active account's live catalog for the dashboard; the static
   // registry remains the fallback while the request is pending or unavailable.
   useEffect(() => {
-    if (providerId !== "cursor") {
-      setLiveModels([]);
-      return;
-    }
-
-    const connection = connections.find((item) => item.isActive !== false);
-    if (!connection?.id) {
-      setLiveModels([]);
-      return;
-    }
-
     let cancelled = false;
-    fetch(`/api/providers/${connection.id}/models`, { cache: "no-store" })
-      .then(async (res) => ({ ok: res.ok, data: await res.json() }))
-      .then(({ ok, data }) => {
-        if (!cancelled && ok && Array.isArray(data.models) && data.models.length > 0) {
+
+    (async () => {
+      if (providerId !== "cursor") {
+        setLiveModels([]);
+        return;
+      }
+
+      const connection = connections.find((item) => item.isActive !== false);
+      if (!connection?.id) {
+        setLiveModels([]);
+        return;
+      }
+
+      const res = await fetch(`/api/providers/${connection.id}/models`, { cache: "no-store" });
+      if (!cancelled && res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.models) && data.models.length > 0) {
           setLiveModels(data.models);
         }
-      })
-      .catch(() => {});
+      }
+    })().catch(() => {});
 
     return () => { cancelled = true; };
   }, [providerId, connections]);

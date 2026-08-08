@@ -97,7 +97,9 @@ export default function APIPageClient({ machineId }) {
   const [isRemoteHost, setIsRemoteHost] = useState(false);
   useEffect(() => {
     if (typeof window !== "undefined")
-      setIsRemoteHost(!["localhost", "127.0.0.1", "::1"].includes(window.location.hostname));
+      queueMicrotask(() =>
+        setIsRemoteHost(!["localhost", "127.0.0.1", "::1"].includes(window.location.hostname))
+      );
   }, []);
 
   const { copied, copy } = useCopyToClipboard();
@@ -269,7 +271,7 @@ export default function APIPageClient({ machineId }) {
     }
   };
 
-  const fetchData = async () => {
+  async function fetchData() {
     try {
       const fetchKeys = async () => {
         const res = await fetch("/api/keys");
@@ -296,7 +298,7 @@ export default function APIPageClient({ machineId }) {
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   // u2500u2500u2500 Cloudflare Tunnel handlers
   // Ping tunnel health until reachable. Race multiple URLs (shortlink + direct) — 1 OK is enough.
@@ -785,7 +787,7 @@ export default function APIPageClient({ machineId }) {
   // Hydration fix: Only access window on client side
   useEffect(() => {
     if (typeof window !== "undefined") {
-      setBaseUrl(`${window.location.origin}/v1`);
+      queueMicrotask(() => setBaseUrl(`${window.location.origin}/v1`));
     }
   }, []);
 
