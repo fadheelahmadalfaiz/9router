@@ -26,12 +26,17 @@ function readRequired(relativePath) {
     console.error(`Missing expected file: ${target}`);
     process.exit(1);
   }
-  return fs.readFileSync(target, 'utf8');
+  // Normalize CRLF -> LF so anchor matching is line-ending agnostic.
+  return fs.readFileSync(target, 'utf8').replace(/\r\n/g, "\n");
 }
 
 function writeIfChanged(relativePath, contents, label) {
   const target = filePath(relativePath);
   const before = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : null;
+  // Preserve the file's original line endings (CRLF stays CRLF, LF stays LF).
+  if (before !== null && before.includes("\r\n") && !contents.includes("\r\n")) {
+    contents = contents.replace(/\n/g, "\r\n");
+  }
   if (before === contents) return false;
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, contents);
@@ -611,7 +616,7 @@ function patchBranding() {
   globals = replaceRequiredPattern(
     files.globals,
     globals,
-    /\/\* ============================================================\n   9Router palette[\s\S]*?\.dark \{[\s\S]*?\n\}/,
+    /\/\* ============================================================\r?\n   9Router palette[\s\S]*?\.dark \{[\s\S]*?\r?\n\}/,
     `/* ============================================================
    9Router palette - citron primary, violet companion accent,
    neutral warm bases
