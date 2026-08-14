@@ -207,6 +207,43 @@ describe("freebuff executor wire shape", () => {
     const ex = new FreebuffExecutor();
     expect(ex.buildUrl()).toBe("https://www.codebuff.com/api/v1/chat/completions");
   });
+
+  it("injects the end_turn tool into any tool-calling request (backend foreign_toolset gate)", () => {
+    const ex = new FreebuffExecutor();
+    const body = {
+      model: "deepseek/deepseek-v4-flash",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{ type: "function", function: { name: "read_file", description: "read" } }],
+    };
+    const out = ex.transformRequest(body.model, body, true, { providerSpecificData: { fingerprintId: "fp-1" } });
+    const names = out.tools.map((t) => t.function.name);
+    expect(names).toContain("read_file");
+    expect(names).toContain("end_turn");
+    expect(out.tools[out.tools.length - 1].function).toMatchObject({
+      name: "end_turn",
+      description: "Signal the end of the current task.",
+    });
+  });
+
+  it("does not inject end_turn when the request has no tools", () => {
+    const ex = new FreebuffExecutor();
+    const body = { model: "deepseek/deepseek-v4-flash", messages: [{ role: "user", content: "hi" }] };
+    const out = ex.transformRequest(body.model, body, true, { providerSpecificData: { fingerprintId: "fp-1" } });
+    expect(out.tools).toBeUndefined();
+  });
+
+  it("does not duplicate end_turn when the caller already declared it", () => {
+    const ex = new FreebuffExecutor();
+    const endTurn = { type: "function", function: { name: "end_turn", description: "Signal the end of the current task.", parameters: { type: "object", properties: {} } } };
+    const body = {
+      model: "deepseek/deepseek-v4-flash",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [endTurn],
+    };
+    const out = ex.transformRequest(body.model, body, true, { providerSpecificData: { fingerprintId: "fp-1" } });
+    expect(out.tools).toHaveLength(1);
+    expect(out.tools[0].function.name).toBe("end_turn");
+  });
 });
 
 describe("freebuff session pre-flight", () => {
@@ -301,11 +338,11 @@ describe("freebuff free-tier system marker", () => {
 
 describe("freebuff run registration", () => {
   it("maps freebuff models to their root free agent ids", () => {
-    expect(rootAgentIdForModel("deepseek/deepseek-v4-flash")).toBe("base2-free-deepseek-flash");
-    expect(rootAgentIdForModel("deepseek/deepseek-v4-pro")).toBe("base2-free-deepseek");
-    expect(rootAgentIdForModel("mimo/mimo-v2.5")).toBe("base2-free-mimo");
-    expect(rootAgentIdForModel("minimax/minimax-m3")).toBe("base2-free-minimax-m3");
-    expect(rootAgentIdForModel("openai/gpt-5.6-luna")).toBe("base2-free-luna");
+    expect(rootAgentIdForModel("deepseek/deepseek-v4-flash")).toBe("base3-free-deepseek-flash");
+    expect(rootAgentIdForModel("deepseek/deepseek-v4-pro")).toBe("base3-free-deepseek");
+    expect(rootAgentIdForModel("mimo/mimo-v2.5")).toBe("base3-free-mimo");
+    expect(rootAgentIdForModel("minimax/minimax-m3")).toBe("base3-free-minimax-m3");
+    expect(rootAgentIdForModel("openai/gpt-5.6-luna")).toBe("base3-free-luna");
     expect(rootAgentIdForModel("some/unknown-model")).toBe("base2-free");
   });
 
@@ -320,7 +357,7 @@ describe("freebuff run registration", () => {
     expect(opts.headers.Authorization).toBe("Bearer tok-1");
     const payload = JSON.parse(opts.body);
     expect(payload.action).toBe("START");
-    expect(payload.agentId).toBe("base2-free-deepseek-flash");
+    expect(payload.agentId).toBe("base3-free-deepseek-flash");
     expect(payload.ancestorRunIds).toEqual([]);
   });
 
@@ -584,5 +621,30 @@ describe("freebuff executor execute", () => {
     const finishes = runCalls.filter(([, o]) => JSON.parse(o.body).action === "FINISH");
     expect(finishes.length).toBe(1);
     expect(JSON.parse(finishes[0][1].body).status).toBe("cancelled");
+  });
+});
+
+describe("freebuff executor parseError", () => {
+  it("explains a 404 'No endpoints found' as the toolset gate, not a credential problem", async () => {
+    const ex = new FreebuffExecutor();
+    const res = jsonResponse(
+      { error: { message: "No endpoints found for deepseek/deepseek-v4-flash.", code: 404, type: null, param: null } },
+      { status: 404, ok: false },
+    );
+    const parsed = await ex.parseError(res, JSON.stringify({ error: { message: "No endpoints found for deepseek/deepseek-v4-flash.", code: 404 } }));
+
+    expect(parsed.status).toBe(404);
+    expect(parsed.message).toMatch(/end_turn/i);
+    expect(parsed.message).not.toMatch(/credential/i);
+    expect(parsed.resetsAtMs).toBeGreaterThan(Date.now());
+  });
+
+  it("passes other statuses through untouched", async () => {
+    const ex = new FreebuffExecutor();
+    const res = jsonResponse({ error: "bad" }, { status: 500, ok: false });
+    const parsed = await ex.parseError(res, JSON.stringify({ error: "bad" }));
+    expect(parsed.status).toBe(500);
+    expect(parsed.message).toContain("bad");
+    expect(parsed.resetsAtMs).toBeUndefined();
   });
 });

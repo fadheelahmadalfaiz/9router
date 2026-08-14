@@ -75,13 +75,40 @@ function injectFreebuffMarker(body) {
   return { ...body, messages: [{ role: "system", content: FREEBUFF_SYSTEM_MARKER }, ...messages] };
 }
 
-// Freebuff root agent id per model (mirrors the CLI's FREEBUFF_ROOT_AGENT_ID_BY_MODEL).
+// The backend's foreign_toolset gate rejects any tool-calling request whose
+// toolset lacks the CLI's `end_turn` tool with a misleading 404 "No endpoints
+// found for {model}" (verified live 2026-08-14; the freebuff-proxy bridge
+// works around the same gate by injecting this definition). Every request that
+// declares tools must carry it or the router finds no serving endpoint.
+const END_TURN_TOOL = {
+  type: "function",
+  function: {
+    name: "end_turn",
+    description: "Signal the end of the current task.",
+    parameters: { type: "object", properties: {} },
+  },
+};
+
+function injectEndTurnTool(body) {
+  const tools = body?.tools;
+  if (!Array.isArray(tools) || tools.length === 0) return body;
+  const hasEndTurn = tools.some(
+    (t) => t?.function?.name === "end_turn",
+  );
+  if (hasEndTurn) return body;
+  return { ...body, tools: [...tools, END_TURN_TOOL] };
+}
+
+// Freebuff root agent id per model (mirrors the CLI's
+// FREEBUFF_CLI_BASE3_AGENT_ID_BY_MODEL — the CLI harness moved from base2 to
+// base3, and the backend can return 404 "No endpoints found" for the old
+// base2 roots during the transition).
 const FREE_ROOT_AGENT_BY_MODEL = {
-  "deepseek/deepseek-v4-flash": "base2-free-deepseek-flash",
-  "deepseek/deepseek-v4-pro": "base2-free-deepseek",
-  "mimo/mimo-v2.5": "base2-free-mimo",
-  "minimax/minimax-m3": "base2-free-minimax-m3",
-  "openai/gpt-5.6-luna": "base2-free-luna",
+  "deepseek/deepseek-v4-flash": "base3-free-deepseek-flash",
+  "deepseek/deepseek-v4-pro": "base3-free-deepseek",
+  "mimo/mimo-v2.5": "base3-free-mimo",
+  "minimax/minimax-m3": "base3-free-minimax-m3",
+  "openai/gpt-5.6-luna": "base3-free-luna",
 };
 
 // Per-token+model session cache (in-memory; keyed so multi-account setups
@@ -414,6 +441,23 @@ export class FreebuffExecutor extends BaseExecutor {
     return this.config.baseUrl;
   }
 
+  // The backend's model router answers 404 "No endpoints found for {model}"
+  // when a tool-calling request's toolset fails its foreign_toolset gate —
+  // normally prevented by injecting the CLI's `end_turn` tool (see
+  // injectEndTurnTool). If one still slips through, surface a helpful message
+  // instead of a bare 404, and let the standard cooldown pace retries.
+  async parseError(response, bodyText) {
+    const text = String(bodyText || "");
+    if (response?.status === 404 && /No endpoints found/i.test(text)) {
+      return {
+        status: 404,
+        message: `Freebuff upstream rejected the request (404: "${text.trim().slice(0, 90)}"). Tool-calling requests need the CLI's end_turn tool — retry; if it persists the Codebuff backend may be having trouble.`,
+        resetsAtMs: Date.now() + 120_000,
+      };
+    }
+    return super.parseError(response, bodyText);
+  }
+
   transformRequest(model, body, stream, credentials) {
     // Top-level wire shape — see header comment. `run_id` and
     // `freebuff_instance_id` are attached by execute() (they need the async
@@ -425,14 +469,16 @@ export class FreebuffExecutor extends BaseExecutor {
       cost_mode: "free",
     };
     body.provider = { allow_fallbacks: false };
-    // Freebuff agents (base2-free-*) own reasoning: the backend applies the
+    // Freebuff agents (base3-free-*) own reasoning: the backend applies the
     // agent's reasoningOptions.effort server-side, so a client-sent
     // reasoning_effort / reasoning.effort collides with that default →
     // 400 "both provided with conflicting values". Mirror the CLI: send none.
     delete body.reasoning_effort;
     delete body.reasoning;
     // Free-tier gate: first system message must open with the CLI marker.
-    return injectFreebuffMarker(body);
+    body = injectFreebuffMarker(body);
+    // Foreign-toolset gate: tool-calling requests must declare `end_turn`.
+    return injectEndTurnTool(body);
   }
 
   async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
@@ -638,6 +684,7 @@ export const __test__ = {
   resetSessionCache,
   rootAgentIdForModel,
   injectFreebuffMarker,
+  injectEndTurnTool,
   fetchWithNetworkRetry,
   FREEBUFF_SYSTEM_MARKER,
   SESSION_STALE_CODES,

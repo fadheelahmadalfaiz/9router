@@ -9,6 +9,7 @@ import {
   pruneExpired,
   resetPoolFitness,
 } from "open-sse/services/proxyPoolFitness.js";
+import { pickProxyPoolId } from "../../src/lib/network/connectionProxy.js";
 
 describe("proxy pool fitness registry", () => {
   beforeEach(() => resetPoolFitness());
@@ -37,6 +38,30 @@ describe("proxy pool fitness registry", () => {
     const snap = poolFitnessSnapshot();
     expect(snap.p1["fb::m1"]).toBeDefined();
     expect(snap.p1["fb::m2"]).toBeUndefined();
+  });
+
+  it("does not reuse a pool when every smart candidate is unfit", () => {
+    markPoolUnfit("p1", "freebuff::openai/gpt-5.6-luna", Date.now() + 60_000, "limited_ip");
+    markPoolUnfit("p2", "freebuff::openai/gpt-5.6-luna", Date.now() + 60_000, "limited_ip");
+
+    expect(pickProxyPoolId(
+      ["p1", "p2"],
+      "smart",
+      "freebuff",
+      { scope: "freebuff::openai/gpt-5.6-luna" },
+    )).toBeNull();
+  });
+
+  it("preserves fail-open smart fallback for non-Freebuff providers", () => {
+    markPoolUnfit("p1", "opencode::sonnet-4.6", Date.now() + 60_000, "ip-limit");
+    markPoolUnfit("p2", "opencode::sonnet-4.6", Date.now() + 60_000, "ip-limit");
+
+    expect(pickProxyPoolId(
+      ["p1", "p2"],
+      "smart",
+      "opencode",
+      { scope: "opencode::sonnet-4.6" },
+    )).toBe("p1");
   });
 
   it("clear per scope, clear-all per provider, clear-all global, pruneExpired", () => {
