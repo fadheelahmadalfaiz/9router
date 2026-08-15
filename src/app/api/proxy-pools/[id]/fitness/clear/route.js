@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { clearPoolUnfit } from "open-sse/services/proxyPoolFitness.js";
+import { clearPoolUnfit, ensurePoolFitnessHydrated } from "open-sse/services/proxyPoolFitness.js";
 
 // POST /api/proxy-pools/[id]/fitness/clear
 // Body: { scope: "provider::model" } — clears the mark for this pool + scope.
 export async function POST(request, { params }) {
   try {
+    await ensurePoolFitnessHydrated();
     const { id } = await params;
     let body = {};
     try {

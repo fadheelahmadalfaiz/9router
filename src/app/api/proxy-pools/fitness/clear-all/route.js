@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import { clearAllPoolUnfit } from "open-sse/services/proxyPoolFitness.js";
+import { clearAllPoolUnfit, ensurePoolFitnessHydrated } from "open-sse/services/proxyPoolFitness.js";
 
 // POST /api/proxy-pools/fitness/clear-all
 // Body: { provider?: string } — clears every mark, or only marks scoped to the
 // given provider ("provider::*") when provided.
 export async function POST(request) {
   try {
+    await ensurePoolFitnessHydrated();
     let body = {};
     try {
       body = await request.json();

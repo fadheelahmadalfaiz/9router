@@ -6,7 +6,7 @@ import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import CooldownTimer from "./CooldownTimer";
 
-export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
+export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null, modelAssignmentOptions = null, onModelAssignmentChange = null, strictModelAssignment = false }) {
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
   const [updatingProxy, setUpdatingProxy] = useState(false);
   const [selectedProxyIds, setSelectedProxyIds] = useState([]);
@@ -19,13 +19,14 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     const legacyProxyPoolId = connection.providerSpecificData?.proxyPoolId;
     
     // Migrate legacy single proxy to array format
-    if (legacyProxyPoolId && proxyPoolIds.length === 0) {
-      setSelectedProxyIds([legacyProxyPoolId]);
-    } else {
-      setSelectedProxyIds(proxyPoolIds);
-    }
-    
-    setRotationStrategy(connection.providerSpecificData?.proxyRotationStrategy || "none");
+    queueMicrotask(() => {
+      if (legacyProxyPoolId && proxyPoolIds.length === 0) {
+        setSelectedProxyIds([legacyProxyPoolId]);
+      } else {
+        setSelectedProxyIds(proxyPoolIds);
+      }
+      setRotationStrategy(connection.providerSpecificData?.proxyRotationStrategy || "none");
+    });
   }, [connection]);
 
   const proxyPoolMap = new Map((proxyPools || []).map((pool) => [pool.id, pool]));
@@ -201,7 +202,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [modelLockUntil]);
+  }, [connection, modelLockUntil]);
 
   // Determine effective status (override unavailable if cooldown expired)
   const effectiveStatus = (connection.testStatus === "unavailable" && !isCooldown)
@@ -283,6 +284,20 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
               </Badge>
             )}
           </div>
+           {modelAssignmentOptions && onModelAssignmentChange && (
+             <select
+               value={connection.providerSpecificData?.assignedModel || connection.providerSpecificData?.freebuffModel || ""}
+              onChange={(e) => onModelAssignmentChange(e.target.value)}
+              disabled={!strictModelAssignment}
+               className="mt-2 max-w-full rounded-md border border-border bg-background px-2 py-1 text-[11px] text-text-main"
+               title="Model assignment"
+             >
+               <option value="">Unassigned</option>
+               {modelAssignmentOptions.map((model) => (
+                <option key={model.id} value={model.id}>{model.name || model.id}</option>
+              ))}
+            </select>
+          )}
           {hasAnyProxy && (
             <div className="mt-1 flex items-center gap-2 flex-wrap">
               <span className="max-w-full truncate text-[11px] text-text-muted sm:max-w-[420px]" title={proxyDisplayText}>
@@ -495,6 +510,9 @@ ConnectionRow.propTypes = {
   onUpdateProxy: PropTypes.func,
   onEdit: PropTypes.func.isRequired,
   onDelete: PropTypes.func.isRequired,
+  modelAssignmentOptions: PropTypes.arrayOf(PropTypes.shape({ id: PropTypes.string.isRequired, name: PropTypes.string })),
+  onModelAssignmentChange: PropTypes.func,
+  strictModelAssignment: PropTypes.bool,
   oneByOneStatus: PropTypes.shape({
     state: PropTypes.string,
     error: PropTypes.string,

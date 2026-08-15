@@ -17,14 +17,49 @@
 
 const FITNESS_STATE_KEY = "__9routerPoolFitness__";
 const fitness = (globalThis[FITNESS_STATE_KEY] ??= new Map()); // poolId -> Map<scope, { until, reason }>
+let persistTimer = null;
+let hydratePromise = null;
 
 export const POOL_UNFIT_MS = 5 * 60 * 1000;
+
+function schedulePersist() {
+  if (persistTimer) return;
+  persistTimer = setTimeout(async () => {
+    persistTimer = null;
+    try {
+      const { updateSettings } = await import("@/lib/db/repos/settingsRepo.js");
+      await updateSettings({ proxyPoolFitness: poolFitnessSnapshot() });
+    } catch {
+      // Fitness is advisory; persistence failures must not block requests.
+    }
+  }, 25);
+  if (persistTimer.unref) persistTimer.unref();
+}
+
+export function hydratePoolFitness(snapshot = {}) {
+  for (const [poolId, byScope] of Object.entries(snapshot || {})) {
+    const entries = Object.entries(byScope || {}).filter(([, entry]) => Number(entry?.until) > Date.now());
+    if (entries.length) fitness.set(poolId, new Map(entries));
+  }
+}
+
+export async function ensurePoolFitnessHydrated() {
+  if (!hydratePromise) {
+    hydratePromise = import("@/lib/db/repos/settingsRepo.js")
+      .then(({ getSettings }) => getSettings())
+      .then((settings) => hydratePoolFitness(settings.proxyPoolFitness || {}))
+      .catch(() => {})
+      .then(() => undefined);
+  }
+  return hydratePromise;
+}
 
 export function markPoolUnfit(poolId, scope, until = Date.now() + POOL_UNFIT_MS, reason = "") {
   if (!poolId || !scope) return;
   const byScope = fitness.get(poolId) || new Map();
   byScope.set(scope, { until, reason });
   fitness.set(poolId, byScope);
+  schedulePersist();
 }
 
 export function clearPoolUnfit(poolId, scope) {
@@ -32,6 +67,7 @@ export function clearPoolUnfit(poolId, scope) {
   if (!byScope) return;
   byScope.delete(scope);
   if (byScope.size === 0) fitness.delete(poolId);
+  schedulePersist();
 }
 
 // "provider::model" -> "provider::*" (null when the scope has no provider part)
@@ -77,9 +113,11 @@ export function clearAllPoolUnfit(provider = null) {
       }
       if (byScope.size === 0) fitness.delete(poolId);
     }
+    schedulePersist();
     return;
   }
   fitness.clear();
+  schedulePersist();
 }
 
 // Snapshot of live (non-expired) marks — expired entries are pruned here so
@@ -87,6 +125,8 @@ export function clearAllPoolUnfit(provider = null) {
 // Test helper: drop all marks (module state is globalThis-backed).
 export function resetPoolFitness() {
   fitness.clear();
+  hydratePromise = Promise.resolve();
+  schedulePersist();
 }
 
 // Sweep all expired marks. Returns how many scope entries were removed.
@@ -101,6 +141,7 @@ export function pruneExpired(now = Date.now()) {
     }
     if (byScope.size === 0) fitness.delete(poolId);
   }
+  if (removed) schedulePersist();
   return removed;
 }
 

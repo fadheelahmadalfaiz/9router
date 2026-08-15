@@ -79,6 +79,7 @@ export default function ProviderDetailPage() {
   const [bulkUpdatingProxy, setBulkUpdatingProxy] = useState(false);
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
+  const [strictModelAssignment, setStrictModelAssignment] = useState(false);
   const [thinkingMode, setThinkingMode] = useState("auto");
   const [autoPing, setAutoPing] = useState({ enabled: false, connections: {} });
   const [suggestedModels, setSuggestedModels] = useState([]);
@@ -185,6 +186,21 @@ export default function ProviderDetailPage() {
     return levels && levels.includes(thinkingMode) ? thinkingMode : null;
   };
   const providerStorageAlias = isCompatible ? providerId : providerAlias;
+  const assignmentModels = (() => {
+    const byId = new Map();
+    const add = (model) => {
+      if (model?.id && !byId.has(model.id)) byId.set(model.id, model);
+    };
+    models.forEach(add);
+    kiloFreeModels.forEach(add);
+    customModels.forEach((model) => {
+      if (model.providerAlias === providerStorageAlias && (model.kind || model.type || "llm") === "llm") {
+        add(model);
+      }
+    });
+    const disabled = new Set(disabledModelIds);
+    return [...byId.values()].filter((model) => !disabled.has(model.id));
+  })();
   // Union of levels across this provider's reasoning models — drives the level picker options.
   // Include custom models too (e.g. manually added gpt-5.6-sol → max).
   const providerThinkingLevels = (() => {
@@ -328,6 +344,7 @@ export default function ProviderDetailPage() {
       const override = (settingsData.providerStrategies || {})[providerId] || {};
       setProviderStrategy(override.fallbackStrategy || null);
       setProviderStickyLimit(override.stickyRoundRobinLimit != null ? String(override.stickyRoundRobinLimit) : "1");
+      setStrictModelAssignment(override.strictModelAssignment === true);
       // Load per-provider thinking config
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
@@ -383,9 +400,13 @@ export default function ProviderDetailPage() {
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
       const current = settingsData.providerStrategies || {};
 
-      // Build override: null strategy means remove override, use global
-      const override = {};
+      // Preserve Freebuff-only settings while changing the shared strategy.
+      const override = { ...(current[providerId] || {}) };
       if (strategy) override.fallbackStrategy = strategy;
+      else {
+        delete override.fallbackStrategy;
+        delete override.stickyRoundRobinLimit;
+      }
       if (strategy === "round-robin" && stickyLimit !== "") {
         override.stickyRoundRobinLimit = Number(stickyLimit) || 3;
       }
@@ -404,6 +425,44 @@ export default function ProviderDetailPage() {
       });
     } catch (error) {
       console.log("Error saving provider strategy:", error);
+    }
+  };
+
+  const handleStrictAssignmentToggle = async (enabled) => {
+    setStrictModelAssignment(enabled);
+    try {
+      const settingsRes = await fetch("/api/settings", { cache: "no-store" });
+      const settingsData = settingsRes.ok ? await settingsRes.json() : {};
+      const current = settingsData.providerStrategies || {};
+      await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          providerStrategies: {
+            ...current,
+            [providerId]: { ...(current[providerId] || {}), strictModelAssignment: enabled },
+          },
+        }),
+      });
+    } catch (error) {
+      console.log("Error saving Freebuff strict assignment:", error);
+    }
+  };
+
+  const handleModelAssignment = async (connectionId, assignedModel) => {
+    try {
+      const res = await fetch(`/api/providers/${connectionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerSpecificData: { assignedModel: assignedModel || null } }),
+      });
+      if (res.ok) {
+        setConnections((prev) => prev.map((c) => c.id === connectionId
+          ? { ...c, providerSpecificData: { ...(c.providerSpecificData || {}), assignedModel: assignedModel || null } }
+          : c));
+      }
+    } catch (error) {
+      console.log("Error saving Freebuff model assignment:", error);
     }
   };
 
@@ -914,6 +973,12 @@ export default function ProviderDetailPage() {
     setBulkProxyPoolId("__none__");
   };
 
+  useEffect(() => {
+    queueMicrotask(() => {
+      setSelectedConnectionIds((prev) => prev.filter((id) => connections.some((conn) => conn.id === id)));
+    });
+  }, [connections]);
+
   const selectedProxySummary = (() => {
     if (selectedConnections.length === 0) return "";
     const poolIds = new Set(selectedConnections.map((conn) => conn.providerSpecificData?.proxyPoolId || "__none__"));
@@ -1058,6 +1123,9 @@ export default function ProviderDetailPage() {
                 }}
                 onDelete={() => handleDelete(conn.id)}
                 oneByOneStatus={oneByOneResults[conn.id] || null}
+                modelAssignmentOptions={assignmentModels}
+                onModelAssignmentChange={(model) => handleModelAssignment(conn.id, model)}
+                strictModelAssignment={strictModelAssignment}
               />
             </div>
           </div>
@@ -1623,6 +1691,13 @@ export default function ProviderDetailPage() {
                     />
                   </div>
                 )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 border-t border-black/[0.03] pt-2 dark:border-white/[0.03]">
+                <div>
+                  <span className="text-xs text-text-muted font-medium">Strict Model Assignment</span>
+                  <p className="text-[10px] text-text-muted">Only assigned accounts can serve each model for this provider.</p>
+                </div>
+                <Toggle checked={strictModelAssignment} onChange={handleStrictAssignmentToggle} />
               </div>
             </div>
           </div>

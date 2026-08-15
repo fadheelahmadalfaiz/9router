@@ -1,5 +1,5 @@
 import { getProxyPoolById } from "@/models";
-import { fitPoolIds } from "open-sse/services/proxyPoolFitness.js";
+import { ensurePoolFitnessHydrated, fitPoolIds } from "open-sse/services/proxyPoolFitness.js";
 
 // Safely normalize any value into a trimmed string.
 function normalizeString(value) {
@@ -30,8 +30,10 @@ export function pickProxyPoolId(poolIds, strategy, providerId, opts = {}) {
   if (strategy === "smart" && scope) eligible = fitPoolIds(eligible, scope);
 
   if (eligible.length === 0) {
-    // Every candidate is unfit/excluded — fall back to the first non-excluded
-    // pool rather than deadlocking; its egress may have recovered.
+    // Freebuff must never reuse a limited-IP egress. Other providers retain
+    // the previous fail-open behavior when every smart candidate is marked
+    // unfit; their executors may have their own pool fallback semantics.
+    if (providerId === "freebuff" && strategy === "smart") return null;
     eligible = poolIds.filter((id) => !(excludeIds || []).includes(id));
     if (eligible.length === 0) return null;
   }
@@ -88,6 +90,7 @@ export async function resolveConnectionProxyConfig(
   excludePoolIds = null
 ) {
   try {
+    await ensurePoolFitnessHydrated();
     // Handle new multi-proxy format
     const proxyPoolIds = providerSpecificData?.proxyPoolIds || [];
     const proxyRotationStrategy = providerSpecificData?.proxyRotationStrategy || "none";
@@ -97,6 +100,8 @@ export async function resolveConnectionProxyConfig(
     const proxyPoolIdRaw = legacyProxyPoolId === "__none__" ? "" : legacyProxyPoolId;
 
     const legacy = normalizeLegacyProxy(providerSpecificData);
+    const multiPoolScope = providerSpecificData?.proxyPoolScope || null;
+    let selectedPoolId = null;
 
     /**
      * -----------------------------
@@ -104,10 +109,9 @@ export async function resolveConnectionProxyConfig(
      * -----------------------------
      */
     if (proxyPoolIds.length > 0) {
-      const scope = providerSpecificData?.proxyPoolScope || null;
-      const selectedPoolId = pickProxyPoolId(proxyPoolIds, proxyRotationStrategy, connectionId, { scope, excludeIds: excludePoolIds });
+      selectedPoolId = pickProxyPoolId(proxyPoolIds, proxyRotationStrategy, connectionId, { scope: multiPoolScope, excludeIds: excludePoolIds });
       
-      if (selectedPoolId) {
+    if (selectedPoolId) {
         const proxyPool = await getProxyPoolById(selectedPoolId);
         const proxyUrl = normalizeString(proxyPool?.proxyUrl);
         const noProxy = normalizeString(proxyPool?.noProxy);
@@ -146,6 +150,22 @@ export async function resolveConnectionProxyConfig(
           };
         }
       }
+    }
+    if (
+      !selectedPoolId &&
+      proxyRotationStrategy === "smart" &&
+      multiPoolScope?.startsWith("freebuff::")
+    ) {
+      return {
+        source: "pool",
+        proxyPoolId: null,
+        proxyPool: null,
+        noFitPool: true,
+        connectionProxyEnabled: false,
+        connectionProxyUrl: "",
+        connectionNoProxy: "",
+        strictProxy: true,
+      };
     }
 
     /**
