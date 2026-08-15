@@ -1,0 +1,44 @@
+name: Sync MIBP Branch
+
+on:
+  schedule:
+    # Every 6 hours: keep sync-mibp tracking mhiqrambg/9router-mibp-version master.
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-mibp
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: sync-mibp
+
+      - name: Merge mibp/master → sync-mibp
+        run: |
+          set -euo pipefail
+          git remote add mibp https://github.com/mhiqrambg/9router-mibp-version.git || git remote set-url mibp https://github.com/mhiqrambg/9router-mibp-version.git
+          git fetch mibp master
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # SAFE merge: no -X theirs. sync-mibp carries local MIBP work, so a
+          # conflict must abort loudly instead of being force-overwritten.
+          git merge mibp/master --no-edit || {
+            echo "::error::Merge conflict on sync-mibp — resolve manually and push. Branch left untouched."
+            git merge --abort
+            exit 1
+          }
+
+          git push origin sync-mibp
+
+          echo "✅ sync-mibp synced from mhiqrambg/9router-mibp-version"
