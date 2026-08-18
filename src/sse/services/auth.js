@@ -56,7 +56,6 @@ export function filterConnectionsForModel(providerId, connections, model, settin
     return assignedModel === model;
   });
 }
-}
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
