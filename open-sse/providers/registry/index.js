@@ -120,6 +120,8 @@ import p117 from "./selfhosted-tts.js";
 import p118 from "./selfhosted-embedding.js";
 import p119 from "./fish-audio.js";
 import p120 from "./alitp-intl.js";
+import p121 from "./xquik.js";
+import p122 from "./ollama-search.js";
 
 export default [
   p0,
@@ -243,4 +245,6 @@ export default [
   p118,
   p119,
   p120,
+  p121,
+  p122,
 ];

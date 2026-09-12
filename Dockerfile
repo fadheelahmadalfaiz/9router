@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1.7
-ARG NODE_IMAGE=node:22-alpine
+# Pinned by digest so a base-image refresh cannot silently bump npm and break
+# `npm ci` against the committed lockfile (see v1.0.9 npm ci EUSAGE failure).
+ARG NODE_IMAGE=node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
 FROM ${NODE_IMAGE} AS base
 WORKDIR /app
 
@@ -40,6 +42,8 @@ COPY --from=builder /app/node_modules/next ./node_modules/next
 # sql.js loads dist/sql-wasm.wasm by path at runtime; tracing only follows JS imports,
 # so the last-resort DB driver would abort with ENOENT on the missing binary.
 COPY --from=builder /app/node_modules/sql.js ./node_modules/sql.js
+# node-machine-id is createRequire-loaded at runtime; tracing omits it.
+COPY --from=builder /app/node_modules/node-machine-id ./node_modules/node-machine-id
 
 RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \

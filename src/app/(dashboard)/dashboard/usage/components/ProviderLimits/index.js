@@ -9,6 +9,7 @@ import {
   parseQuotaData,
   calculatePercentage,
   filterQuotasByVisibility,
+  formatFreebucksHeader,
   getHiddenQuotaRows,
   getQuotaVisibilityKey,
   getConnectionLabel,
@@ -1237,6 +1238,11 @@ export default function ProviderLimits() {
               </div>
 
               <div className="px-2 py-1.5">
+                {quota?.raw?.freebucks && !error && !isLoading && (
+                  <div className="mb-1.5 rounded-md bg-black/[0.03] px-2 py-1.5 text-[10px] leading-relaxed text-text-muted dark:bg-white/[0.03]">
+                    {formatFreebucksHeader(quota.raw.freebucks)}
+                  </div>
+                )}
                 {isLoading ? (
                   <div className="text-center py-5 text-text-muted">
                     <span className="material-symbols-outlined text-[28px] animate-spin">
@@ -1264,6 +1270,11 @@ export default function ProviderLimits() {
                     }
                     onHideQuota={(quotaRow) => handleHideQuota(conn.provider, quotaRow)}
                   />
+                )}
+                {quota?.message && !error && !isLoading && (
+                  <p className="mt-2 px-1 text-[10px] leading-relaxed text-text-muted">
+                    {quota.message}
+                  </p>
                 )}
                 {hiddenQuotaRows.length > 0 && (
                   <div className="mt-2 flex min-w-0 items-center gap-1 border-t border-black/5 pt-2 text-[10px] text-text-muted dark:border-white/5">
