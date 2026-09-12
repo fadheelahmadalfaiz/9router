@@ -12,6 +12,11 @@ permissions:
 
 jobs:
   sync:
+    # Guard: this workflow only makes sense on `master`, where it tracks
+    # decolua/9router and regenerates `custom-patch`.
+    # On `sync-mibp` it would run pointlessly (and target the wrong remote):
+    # that branch is synced from mhiqrambg/9router-mibp-version by sync-mibp.yml.
+    if: github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       has_changes: ${{ steps.check.outputs.has_changes }}

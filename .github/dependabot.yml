@@ -1,2 +1,55 @@
 version: 2
-updates: []
+updates:
+  # npm dependencies. Patch/minor bumps are grouped into a single PR because
+  # sync-mibp.yml already refreshes them automatically inside semver ranges;
+  # this entry mainly surfaces MAJOR bumps for manual review.
+  - package-ecosystem: npm
+    directory: /
+    target-branch: sync-mibp
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+      timezone: Asia/Jakarta
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # next/react pair must move together; let upstream control these.
+      - dependency-name: next
+      - dependency-name: react
+      - dependency-name: react-dom
+      - dependency-name: eslint-config-next
+
+  # Keep the actions used by our workflows current.
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: sync-mibp
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+      timezone: Asia/Jakarta
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+
+  # Base image updates for the Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    target-branch: sync-mibp
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:00"
+      timezone: Asia/Jakarta
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(docker)"

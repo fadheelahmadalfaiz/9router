@@ -1,0 +1,137 @@
+name: Sync MIBP
+
+# Keeps the `sync-mibp` branch up to date with its real upstream:
+#   mhiqrambg/9router-mibp-version (default branch: master)
+#
+# NOTE: `sync-mibp` does NOT come from decolua/9router. It is a fork of
+# mhiqrambg/9router-mibp-version. Upstream tracking for decolua/9router is
+# handled separately by sync-upstream.yml (master + custom-patch).
+#
+# What this workflow does, every hour:
+#   1. Merge mhiqrambg/9router-mibp-version@master into sync-mibp (-X theirs on conflict).
+#   2. Refresh npm dependencies inside their semver ranges (npm update) and commit the lockfile.
+#   3. Trigger the Docker image build from sync-mibp if anything changed.
+
+on:
+  schedule:
+    - cron: '15 * * * *'
+  workflow_dispatch:
+    inputs:
+      skip_deps:
+        description: Skip npm dependency refresh
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: sync-mibp
+  cancel-in-progress: false
+
+env:
+  # The real upstream for the sync-mibp branch.
+  MIBP_UPSTREAM: https://github.com/mhiqrambg/9router-mibp-version.git
+  BRANCH: sync-mibp
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.sync.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: sync-mibp
+          # Needed so we can push back to the same branch.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Sync mibp upstream -> sync-mibp
+        id: sync
+        env:
+          INPUT_SKIP_DEPS: ${{ inputs.skip_deps }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git remote add mibp "$MIBP_UPSTREAM" || git remote set-url mibp "$MIBP_UPSTREAM"
+          git fetch mibp master
+          git fetch origin "$BRANCH" || true
+
+          # 1) Bring the branch in line with upstream, preferring upstream on conflict.
+          git checkout "$BRANCH"
+          BEFORE_TREE=$(git rev-parse "HEAD^{tree}")
+
+          # Same content already? Skip the merge entirely to avoid empty merge commits.
+          if git merge-base --is-ancestor "mibp/master" HEAD; then
+            echo "Already up to date with mibp/master."
+            NEEDS_FORCE=false
+          elif git merge --ff-only "mibp/master"; then
+            echo "Fast-forwarded $BRANCH to mibp/master"
+            NEEDS_FORCE=false
+          elif git merge "mibp/master" --no-edit -X theirs; then
+            echo "Merged mibp/master into $BRANCH (theirs on conflict)"
+            NEEDS_FORCE=false
+          else
+            # Upstream rewrote history or has an intractable conflict: follow upstream.
+            echo "Merge failed; resetting $BRANCH to mibp/master (history rewrite)"
+            git merge --abort 2>/dev/null || true
+            git reset --hard "mibp/master"
+            NEEDS_FORCE=true
+          fi
+
+          # Abort if upstream ever introduces conflict markers.
+          if git grep -n -E '^(<<<<<<<|>>>>>>>) ' -- .; then
+            echo "Conflict markers found after merge; aborting."
+            exit 1
+          fi
+
+          # 2) Refresh dependencies within their declared semver ranges.
+          if [ "${INPUT_SKIP_DEPS:-false}" != "true" ] && [ -f package.json ]; then
+            echo "::group::npm update (semver-safe)"
+            npm update --no-audit --no-fund 2>&1 | tail -n 40 || \
+              echo "npm update failed; continuing with upstream code only."
+            echo "::endgroup::"
+          else
+            echo "Dependency refresh skipped."
+          fi
+
+          # 3) Commit only when the working tree actually changed.
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Working tree clean after sync."
+          else
+            git commit -m "chore(sync): merge mibp upstream + refresh dependencies"
+          fi
+
+          # 4) Compare TREE hashes (content), not commit SHAs: a no-op merge
+          #    commit must not trigger a rebuild.
+          AFTER_TREE=$(git rev-parse "HEAD^{tree}")
+          if [ "$BEFORE_TREE" = "$AFTER_TREE" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No content changes (tree $AFTER_TREE)"
+          else
+            if [ "$NEEDS_FORCE" = "true" ]; then
+              git push --force-with-lease origin "$BRANCH"
+            else
+              git push origin "$BRANCH"
+            fi
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Pushed $BRANCH (tree $BEFORE_TREE -> $AFTER_TREE)"
+          fi
+
+  build-and-push:
+    needs: sync
+    if: needs.sync.outputs.has_changes == 'true'
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      ref: sync-mibp
+    secrets: inherit
