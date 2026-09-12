@@ -45,8 +45,10 @@ jobs:
         with:
           fetch-depth: 0
           ref: sync-mibp
-          # Needed so we can push back to the same branch.
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # GH_PAT (not GITHUB_TOKEN) is required: upstream modifies files under
+          # .github/workflows/, and GITHUB_TOKEN is forbidden from pushing those
+          # ("refusing to allow a GitHub App to create or update workflow ...").
+          token: ${{ secrets.GH_PAT }}
 
       - uses: actions/setup-node@v6
         with:
@@ -94,6 +96,27 @@ jobs:
             exit 1
           fi
 
+          # 1b) Protect our own CI from upstream. mhiqrambg/9router-mibp-version
+          # does not carry these files, so a merge would DELETE sync-mibp.yml and
+          # sync-upstream.yml, and OVERWRITE docker-publish.yml with a variant that
+          # pushes to Docker Hub. Restore the pre-merge versions from BEFORE_REF.
+          git fetch origin "$BRANCH"
+          BEFORE_REF=$(git rev-parse "origin/$BRANCH")
+          for f in \
+            .github/workflows/sync-mibp.yml \
+            .github/workflows/sync-upstream.yml \
+            .github/workflows/docker-publish.yml \
+            .github/workflows/gitbook-pages.yml.disabled \
+            .github/dependabot.yml
+          do
+            if git cat-file -e "$BEFORE_REF:$f" 2>/dev/null; then
+              git checkout "$BEFORE_REF" -- "$f"
+              echo "Restored $f from $BEFORE_REF"
+            fi
+          done
+          # If upstream deleted this file, drop the deletion so it stays on this branch.
+          git diff --name-only --diff-filter=D HEAD | grep -E '^\.github/' || true
+
           # 2) Refresh dependencies within their declared semver ranges.
           if [ "${INPUT_SKIP_DEPS:-false}" != "true" ] && [ -f package.json ]; then
             echo "::group::npm update (semver-safe)"
@@ -128,10 +151,50 @@ jobs:
             echo "Pushed $BRANCH (tree $BEFORE_TREE -> $AFTER_TREE)"
           fi
 
+  # Self-contained GHCR-only build. We deliberately do NOT reuse
+  # docker-publish.yml: upstream (mhiqrambg) removed its `workflow_call` trigger
+  # and that workflow now pushes to Docker Hub, which needs DOCKERHUB_* secrets
+  # we do not maintain on this fork.
   build-and-push:
     needs: sync
     if: needs.sync.outputs.has_changes == 'true'
-    uses: ./.github/workflows/docker-publish.yml
-    with:
-      ref: sync-mibp
-    secrets: inherit
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: sync-mibp
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=max
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
