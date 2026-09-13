@@ -55,6 +55,13 @@ export async function handleChat(request, clientRawRequest = null) {
   const { model: modelStr, contextMarker } = stripModelContextMarker(body.model);
   if (contextMarker) body.model = modelStr;
 
+  // MIBP-only: the Antigravity MITM proxy pins the account it picked from the pool
+  // by sending `x-connection-id`. Chat must honour it so the pinned account is used
+  // instead of a random one. Declared here (not inline) because it is captured by
+  // the arrow functions handed to withCapacityAdapterStripping/handleComboChat below;
+  // dropping this line turns those closures into a ReferenceError at runtime.
+  const preferredConnectionId = request.headers.get("x-connection-id") || null;
+
   // Request summary is emitted as the unified "▶" line in chatCore (has fmt/thinking/account)
 
   // Log API key (masked)

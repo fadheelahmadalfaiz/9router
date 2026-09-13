@@ -114,6 +114,31 @@ jobs:
               echo "Restored $f from $BEFORE_REF"
             fi
           done
+
+          # 1c) Guard the MIBP-only chat handler. Upstream deliberately dropped
+          # `preferredConnectionId` from src/sse/handlers/chat.js, but this fork
+          # needs it (Antigravity MITM pins an account via `x-connection-id`).
+          # A naive merge produces the worst of both worlds: declaration removed,
+          # usages kept -> every combo request throws
+          #   ReferenceError: preferredConnectionId is not defined
+          # Detect that exact state and restore our copy instead of shipping it.
+          CHAT=src/sse/handlers/chat.js
+          if git cat-file -e "$BEFORE_REF:$CHAT" 2>/dev/null; then
+            USES=$(grep -c 'preferredConnectionId' "$CHAT" || true)
+            DECLS=$(grep -cE '(const|let|var)[[:space:]]+preferredConnectionId' "$CHAT" || true)
+            if [ "$USES" -gt 0 ] && [ "$DECLS" -eq 0 ]; then
+              echo "::warning::$CHAT has orphan preferredConnectionId (uses=$USES decls=$DECLS); restoring our version."
+              git checkout "$BEFORE_REF" -- "$CHAT"
+            else
+              echo "$CHAT OK (uses=$USES decls=$DECLS)"
+            fi
+          fi
+          for f in tests/unit/preferredConnectionIdScope.test.js; do
+            if git cat-file -e "$BEFORE_REF:$f" 2>/dev/null && [ ! -f "$f" ]; then
+              git checkout "$BEFORE_REF" -- "$f"
+              echo "Restored $f from $BEFORE_REF"
+            fi
+          done
           # If upstream deleted this file, drop the deletion so it stays on this branch.
           git diff --name-only --diff-filter=D HEAD | grep -E '^\.github/' || true
 
@@ -126,6 +151,18 @@ jobs:
           else
             echo "Dependency refresh skipped."
           fi
+
+          # 2b) Hard gate: a merge must never reintroduce an orphan
+          # preferredConnectionId. Fail the job instead of pushing broken code.
+          if [ -f "$CHAT" ]; then
+            USES=$(grep -c 'preferredConnectionId' "$CHAT" || true)
+            DECLS=$(grep -cE '(const|let|var)[[:space:]]+preferredConnectionId' "$CHAT" || true)
+            if [ "$USES" -gt 0 ] && [ "$DECLS" -eq 0 ]; then
+              echo "::error::$CHAT would throw 'preferredConnectionId is not defined' (uses=$USES decls=$DECLS). Refusing to push."
+              exit 1
+            fi
+          fi
+          node --check "$CHAT" 2>&1 || { echo "::error::$CHAT failed syntax check"; exit 1; }
 
           # 3) Commit only when the working tree actually changed.
           git add -A
