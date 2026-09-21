@@ -107,6 +107,8 @@ export default function ProvidersPage() {
   const [testingMode, setTestingMode] = useState(null);
   const [testResults, setTestResults] = useState(null);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [selectedProviderIds, setSelectedProviderIds] = useState([]);
+  const [bulkTesting, setBulkTesting] = useState(false);
   const notify = useNotificationStore();
   const searchQuery = useHeaderSearchStore((s) => s.query);
   const registerSearch = useHeaderSearchStore((s) => s.register);
@@ -263,6 +265,60 @@ export default function ProvidersPage() {
     }
   };
 
+  const toggleSelectProvider = (providerId) => {
+    setSelectedProviderIds((prev) => (
+      prev.includes(providerId)
+        ? prev.filter((id) => id !== providerId)
+        : [...prev, providerId]
+    ));
+  };
+
+  const clearProviderSelection = () => setSelectedProviderIds([]);
+
+  const handleBulkTestSelected = async () => {
+    if (selectedProviderIds.length === 0 || bulkTesting) return;
+    setBulkTesting(true);
+    try {
+      let totalPassed = 0;
+      let totalFailed = 0;
+      let totalTested = 0;
+      let requestErrors = 0;
+      const aggregated = [];
+      for (const pid of selectedProviderIds) {
+        try {
+          const res = await fetch("/api/providers/test-batch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode: "provider", providerId: pid }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            requestErrors += 1;
+            continue;
+          }
+          const passed = data.summary?.passed ?? 0;
+          const failed = data.summary?.failed ?? 0;
+          const total = data.summary?.total ?? 0;
+          totalPassed += passed;
+          totalFailed += failed;
+          totalTested += total;
+          aggregated.push({ providerId: pid, ...data });
+        } catch {
+          requestErrors += 1;
+        }
+      }
+      if (totalTested === 0 && requestErrors > 0) {
+        notify.error(`Bulk test failed for ${requestErrors} provider(s)`);
+      } else if (totalFailed === 0 && requestErrors === 0) {
+        notify.success(`All ${totalTested} tests passed across ${selectedProviderIds.length} provider(s)`);
+      } else {
+        notify.warning(`${totalPassed}/${totalTested} passed, ${totalFailed} failed${requestErrors ? `, ${requestErrors} request error(s)` : ""}`);
+      }
+    } finally {
+      setBulkTesting(false);
+    }
+  };
+
   const compatibleProviders = providerNodes
     .filter((node) => node.type === "openai-compatible")
     .map((node) => ({
@@ -401,6 +457,35 @@ export default function ProvidersPage() {
         </select>
       </div>
 
+      {(selectedProviderIds.length > 0 || bulkTesting) && (
+        <div className="sticky top-2 z-30 flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 shadow-sm">
+          <span className="material-symbols-outlined text-[18px] text-primary">checklist</span>
+          <span className="text-xs font-medium text-primary">
+            {bulkTesting
+              ? "Testing…"
+              : `${selectedProviderIds.length} provider${selectedProviderIds.length > 1 ? "s" : ""} selected`}
+          </span>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              icon={bulkTesting ? "progress_activity" : "play_arrow"}
+              onClick={handleBulkTestSelected}
+              disabled={bulkTesting || selectedProviderIds.length === 0}
+            >
+              {bulkTesting ? "Testing…" : "Test Selected"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={clearProviderSelection}
+              disabled={bulkTesting}
+            >
+              Clear
+            </Button>
+          </div>
+        </div>
+      )}
+
       {!hasAnyResult && (
         <div className="text-center py-8 border border-dashed border-border rounded-xl">
           <span className="material-symbols-outlined text-[32px] text-text-muted mb-2">
@@ -457,6 +542,8 @@ export default function ProvidersPage() {
                   onToggle={(active) =>
                     handleToggleProvider(info.id, "apikey", active)
                   }
+                  bulkSelected={selectedProviderIds.includes(info.id)}
+                  onToggleBulkSelect={() => toggleSelectProvider(info.id)}
                 />
               ),
             )}
@@ -504,6 +591,8 @@ export default function ProvidersPage() {
                 stats={getProviderStats(key, authTypes)}
                 authType="oauth"
                 onToggle={(active) => handleToggleProvider(key, authTypes, active)}
+                bulkSelected={selectedProviderIds.includes(key)}
+                onToggleBulkSelect={() => toggleSelectProvider(key)}
               />
             );
           })}
@@ -552,6 +641,8 @@ export default function ProvidersPage() {
                 onToggle={(active) =>
                   handleToggleProvider(key, freeAuthTypes, active)
                 }
+                bulkSelected={selectedProviderIds.includes(key)}
+                onToggleBulkSelect={() => toggleSelectProvider(key)}
               />
             );
           })}
@@ -565,6 +656,8 @@ export default function ProvidersPage() {
                 stats={getProviderStats(key, freeAuthTypes)}
                 authType={Array.isArray(freeAuthTypes) ? (freeAuthTypes[0] ?? "apikey") : freeAuthTypes}
                 onToggle={(active) => handleToggleProvider(key, freeAuthTypes, active)}
+                bulkSelected={selectedProviderIds.includes(key)}
+                onToggleBulkSelect={() => toggleSelectProvider(key)}
               />
             );
           })}
@@ -607,6 +700,8 @@ export default function ProvidersPage() {
               stats={getProviderStats(key, "apikey")}
               authType="apikey"
               onToggle={(active) => handleToggleProvider(key, "apikey", active)}
+              bulkSelected={selectedProviderIds.includes(key)}
+              onToggleBulkSelect={() => toggleSelectProvider(key)}
             />
           ))}
         </div>
@@ -693,7 +788,7 @@ export default function ProvidersPage() {
   );
 }
 
-function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
+function ProviderCard({ providerId, provider, stats, authType, onToggle, bulkSelected, onToggleBulkSelect }) {
   const { connected, error, errorCode, errorTime, allDisabled } = stats;
   const isNoAuth = !!provider.noAuth;
 
@@ -711,6 +806,16 @@ function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
   };
 
   return (
+    <div className="relative">
+      {onToggleBulkSelect && (
+        <input
+          type="checkbox"
+          checked={!!bulkSelected}
+          onChange={onToggleBulkSelect}
+          aria-label={`Select ${provider.name}`}
+          className="absolute -top-1 -left-1 z-10 size-4 rounded border-black/30 bg-background text-primary shadow-sm focus:ring-primary dark:border-white/30"
+        />
+      )}
     <Link href={`/dashboard/providers/${providerId}`} className="group min-w-0">
       <Card
         padding="xs"
@@ -782,6 +887,7 @@ function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
         </div>
       </Card>
     </Link>
+    </div>
   );
 }
 
@@ -801,6 +907,8 @@ ProviderCard.propTypes = {
   }).isRequired,
   authType: PropTypes.string,
   onToggle: PropTypes.func,
+  bulkSelected: PropTypes.bool,
+  onToggleBulkSelect: PropTypes.func,
 };
 
 function ApiKeyProviderCard({
@@ -809,6 +917,8 @@ function ApiKeyProviderCard({
   stats,
   authType,
   onToggle,
+  bulkSelected,
+  onToggleBulkSelect,
 }) {
   const { connected, error, errorCode, errorTime, allDisabled } = stats;
   const isCompatible = providerId.startsWith(OPENAI_COMPATIBLE_PREFIX);
@@ -839,6 +949,16 @@ function ApiKeyProviderCard({
   };
 
   return (
+    <div className="relative">
+      {onToggleBulkSelect && (
+        <input
+          type="checkbox"
+          checked={!!bulkSelected}
+          onChange={onToggleBulkSelect}
+          aria-label={`Select ${provider.name}`}
+          className="absolute -top-1 -left-1 z-10 size-4 rounded border-black/30 bg-background text-primary shadow-sm focus:ring-primary dark:border-white/30"
+        />
+      )}
     <Link href={`/dashboard/providers/${providerId}`} className="group min-w-0">
       <Card
         padding="xs"
@@ -920,6 +1040,7 @@ function ApiKeyProviderCard({
         </div>
       </Card>
     </Link>
+    </div>
   );
 }
 
@@ -940,6 +1061,8 @@ ApiKeyProviderCard.propTypes = {
   }).isRequired,
   authType: PropTypes.string,
   onToggle: PropTypes.func,
+  bulkSelected: PropTypes.bool,
+  onToggleBulkSelect: PropTypes.func,
 };
 
 function ProviderTestResultsView({ results }) {

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
 import PropTypes from "prop-types";
 import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
+import { useNotificationStore } from "@/store/notificationStore";
 
 // ── CooldownTimer ──────────────────────────────────────────────
 function CooldownTimer({ until }) {
@@ -30,7 +31,7 @@ function CooldownTimer({ until }) {
 CooldownTimer.propTypes = { until: PropTypes.string.isRequired };
 
 // ── ConnectionRow ──────────────────────────────────────────────
-function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete }) {
+function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, isSelected, onToggleSelect, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete }) {
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
   const [updatingProxy, setUpdatingProxy] = useState(false);
   const [isCooldown, setIsCooldown] = useState(false);
@@ -102,6 +103,13 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
   return (
     <div className={`group flex flex-col gap-3 p-2 rounded-lg sm:flex-row sm:items-center sm:justify-between hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors ${connection.isActive === false ? "opacity-60" : ""}`}>
       <div className="flex w-full min-w-0 flex-1 items-start gap-3 sm:items-center">
+        <input
+          type="checkbox"
+          checked={!!isSelected}
+          onChange={onToggleSelect}
+          aria-label={`Select ${displayName}`}
+          className="mt-1 size-4 shrink-0 rounded border-black/20 text-primary focus:ring-primary dark:border-white/20"
+        />
         <div className="flex flex-col">
           <button onClick={onMoveUp} disabled={isFirst} className={`p-0.5 rounded ${isFirst ? "text-text-muted/30 cursor-not-allowed" : "hover:bg-sidebar text-text-muted hover:text-primary"}`}>
             <span className="material-symbols-outlined text-sm">keyboard_arrow_up</span>
@@ -185,6 +193,8 @@ ConnectionRow.propTypes = {
   isOAuth: PropTypes.bool.isRequired,
   isFirst: PropTypes.bool.isRequired,
   isLast: PropTypes.bool.isRequired,
+  isSelected: PropTypes.bool,
+  onToggleSelect: PropTypes.func,
   onMoveUp: PropTypes.func.isRequired,
   onMoveDown: PropTypes.func.isRequired,
   onToggleActive: PropTypes.func.isRequired,
@@ -305,6 +315,10 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("1");
   const [confirmState, setConfirmState] = useState(null);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [showBulkProxyModal, setShowBulkProxyModal] = useState(false);
+  const notify = useNotificationStore();
 
   const fetch_ = useCallback(async () => {
     try {
@@ -396,6 +410,112 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
     } catch (e) { console.log("update connection error:", e); }
   };
 
+  // ── Bulk actions ──
+  const connectionIds = new Set(connections.map((c) => c.id));
+  const validSelectedIds = selectedIds.filter((id) => connectionIds.has(id));
+  const allSelected = connections.length > 0 && validSelectedIds.length === connections.length;
+
+  const toggleSelect = (id) => setSelectedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  const toggleSelectAll = () => setSelectedIds(allSelected ? [] : connections.map((c) => c.id));
+  const clearSelection = () => setSelectedIds([]);
+
+  useEffect(() => {
+    const ids = new Set(connections.map((c) => c.id));
+    queueMicrotask(() => {
+      setSelectedIds((prev) => prev.filter((id) => ids.has(id)));
+    });
+  }, [connections]);
+
+  const bulkSetActive = async (isActive) => {
+    if (validSelectedIds.length === 0) return;
+    setBulkBusy(true);
+    try {
+      let ok = 0; let failed = 0;
+      await Promise.all(validSelectedIds.map(async (id) => {
+        try {
+          const res = await fetch(`/api/providers/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ isActive }) });
+          if (res.ok) ok += 1; else failed += 1;
+        } catch { failed += 1; }
+      }));
+      await fetch_();
+      notify.success(`${isActive ? "Enabled" : "Disabled"} ${ok}${failed ? `, ${failed} failed` : ""}`);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const bulkDelete = () => {
+    if (validSelectedIds.length === 0) return;
+    const count = validSelectedIds.length;
+    setConfirmState({
+      title: `Delete ${count} Connection${count > 1 ? "s" : ""}`,
+      message: `Delete ${count} connection${count > 1 ? "s" : ""}? This cannot be undone.`,
+      onConfirm: async () => {
+        setConfirmState(null);
+        setBulkBusy(true);
+        const idsToDelete = [...validSelectedIds];
+        let ok = 0; let failed = 0;
+        try {
+          await Promise.all(idsToDelete.map(async (id) => {
+            try {
+              const res = await fetch(`/api/providers/${id}`, { method: "DELETE" });
+              if (res.ok) ok += 1; else failed += 1;
+            } catch { failed += 1; }
+          }));
+          await fetch_();
+          setSelectedIds((prev) => prev.filter((id) => !idsToDelete.includes(id)));
+          notify.success(`Deleted ${ok}${failed ? `, ${failed} failed` : ""}`);
+        } finally {
+          setBulkBusy(false);
+        }
+      }
+    });
+  };
+
+  const applyProxyBulk = async (proxyPoolId) => {
+    if (validSelectedIds.length === 0) return;
+    setBulkBusy(true);
+    try {
+      let ok = 0; let failed = 0;
+      await Promise.all(validSelectedIds.map(async (id) => {
+        try {
+          const res = await fetch(`/api/providers/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proxyPoolId }) });
+          if (res.ok) ok += 1; else failed += 1;
+        } catch { failed += 1; }
+      }));
+      await fetch_();
+      setShowBulkProxyModal(false);
+      const label = proxyPoolId ? "proxy updated" : "proxy unbound";
+      notify.success(`${label}: ${ok}${failed ? `, ${failed} failed` : ""}`);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const applyProxyRotate = async () => {
+    const activePools = proxyPools.filter((p) => p.isActive === true);
+    if (activePools.length === 0) {
+      notify.warning("No active proxy pools available");
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      let ok = 0; let failed = 0;
+      await Promise.all(validSelectedIds.map(async (id, idx) => {
+        const pool = activePools[idx % activePools.length];
+        try {
+          const res = await fetch(`/api/providers/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ proxyPoolId: pool.id }) });
+          if (res.ok) ok += 1; else failed += 1;
+        } catch { failed += 1; }
+      }));
+      await fetch_();
+      setShowBulkProxyModal(false);
+      notify.success(`Rotated ${ok} connection${ok > 1 ? "s" : ""} across ${activePools.length} pool${activePools.length > 1 ? "s" : ""}${failed ? `, ${failed} failed` : ""}`);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   if (loading) return <Card><div className="h-20 animate-pulse bg-black/5 rounded-lg" /></Card>;
 
   return (
@@ -434,6 +554,45 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
           </div>
         ) : (
           <>
+            <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]">
+              <label className="flex cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleSelectAll}
+                  className="size-3.5 rounded border-gray-300 text-primary focus:ring-primary"
+                />
+                {allSelected ? "Unselect All" : "Select All"}
+              </label>
+              <span className="text-[11px] text-text-muted">{connections.length} total</span>
+            </div>
+
+            {validSelectedIds.length > 0 && (
+              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2">
+                <span className="material-symbols-outlined text-[18px] text-primary">checklist</span>
+                <span className="text-xs font-medium text-primary">{validSelectedIds.length} selected</span>
+                <div className="ml-auto flex flex-wrap items-center gap-2">
+                  <Button size="sm" variant="secondary" icon="toggle_on" onClick={() => bulkSetActive(true)} disabled={bulkBusy}>
+                    Enable
+                  </Button>
+                  <Button size="sm" variant="secondary" icon="toggle_off" onClick={() => bulkSetActive(false)} disabled={bulkBusy}>
+                    Disable
+                  </Button>
+                  {proxyPools.length > 0 && (
+                    <Button size="sm" variant="secondary" icon="lan" onClick={() => setShowBulkProxyModal(true)} disabled={bulkBusy}>
+                      Apply Proxy
+                    </Button>
+                  )}
+                  <Button size="sm" variant="danger" icon="delete" onClick={bulkDelete} disabled={bulkBusy}>
+                    Delete
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={clearSelection} disabled={bulkBusy}>
+                    Clear
+                  </Button>
+                </div>
+              </div>
+            )}
+
             <div className="flex flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03] max-h-[500px] overflow-y-auto pr-1">
               {connections.map((conn, idx) => (
                 <ConnectionRow
@@ -443,6 +602,8 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
                   isOAuth={isOAuth}
                   isFirst={idx === 0}
                   isLast={idx === connections.length - 1}
+                  isSelected={validSelectedIds.includes(conn.id)}
+                  onToggleSelect={() => toggleSelect(conn.id)}
                   onMoveUp={() => handleSwapPriority(idx, idx - 1)}
                   onMoveDown={() => handleSwapPriority(idx, idx + 1)}
                   onToggleActive={(isActive) => handleToggleActive(conn.id, isActive)}
@@ -483,6 +644,53 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
         message={confirmState?.message}
         variant="danger"
       />
+
+      {/* Bulk Proxy Modal */}
+      <Modal
+        isOpen={showBulkProxyModal}
+        onClose={() => !bulkBusy && setShowBulkProxyModal(false)}
+        title={`Apply Proxy to ${validSelectedIds.length} Connection${validSelectedIds.length > 1 ? "s" : ""}`}
+      >
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={applyProxyRotate}
+            disabled={bulkBusy || proxyPools.filter((p) => p.isActive === true).length === 0}
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-text-muted text-[18px]">sync_alt</span>
+            <span className="text-sm text-text-main">Rotate across active pools</span>
+          </button>
+          <button
+            onClick={() => applyProxyBulk(null)}
+            disabled={bulkBusy}
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-text-muted text-[18px]">link_off</span>
+            <span className="text-sm text-text-main">None (unbind all)</span>
+          </button>
+          {proxyPools.length > 0 && (
+            <div className="my-1 border-t border-black/[0.05] dark:border-white/[0.05]" />
+          )}
+          {proxyPools.map((pool) => (
+            <button
+              key={pool.id}
+              onClick={() => applyProxyBulk(pool.id)}
+              disabled={bulkBusy || pool.isActive !== true}
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-text-muted text-[18px]">lan</span>
+              <span className="truncate text-sm text-text-main">{pool.name}</span>
+              {pool.isActive !== true && (
+                <span className="text-[10px] text-text-muted">(inactive)</span>
+              )}
+            </button>
+          ))}
+          {bulkBusy && <p className="text-xs text-text-muted px-3 py-2">Applying…</p>}
+          <Button onClick={() => setShowBulkProxyModal(false)} variant="ghost" fullWidth disabled={bulkBusy} className="mt-2">
+            Cancel
+          </Button>
+        </div>
+      </Modal>
     </>
   );
 }
