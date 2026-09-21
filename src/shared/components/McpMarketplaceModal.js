@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Modal from "./Modal";
+import Checkbox from "./Checkbox";
 
 const REGISTRY_ENDPOINT = "/api/cli-tools/cowork-mcp-registry";
 const TOOLS_ENDPOINT = "/api/cli-tools/cowork-mcp-tools";
@@ -219,15 +220,14 @@ export default function McpMarketplaceModal({ isOpen, onClose, onAdd, addedNames
                           </div>
                           <div className="grid grid-cols-2 gap-1 max-h-40 overflow-y-auto">
                             {toolKeys.map((t) => (
-                              <label key={t} className="flex items-center gap-1.5 text-[10px] cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 px-1 rounded">
-                                <input
-                                  type="checkbox"
-                                  checked={!!sel[t]}
-                                  onChange={() => toggleTool(s.url, t)}
-                                  className="size-3"
-                                />
-                                <span className="truncate">{t}</span>
-                              </label>
+                              <Checkbox
+                                key={t}
+                                checked={!!sel[t]}
+                                onChange={() => toggleTool(s.url, t)}
+                                size="sm"
+                                label={t}
+                                className="text-[10px] cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 px-1 rounded"
+                              />
                             ))}
                           </div>
                         </>

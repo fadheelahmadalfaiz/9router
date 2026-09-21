@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Card, Button, Input, Modal, Toggle, ConfirmModal } from "@/shared/components";
+import { Card, Button, Input, Modal, Toggle, Checkbox, ConfirmModal } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { getCurrentLocale, onLocaleChange } from "@/i18n/runtime";
 import {
@@ -586,8 +586,12 @@ export default function TokenSaverClient() {
                 }
 
                 return (
-                  <label
+                  <div
                     key={extra}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => togglePendingExtra(extra)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); togglePendingExtra(extra); } }}
                     className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded border cursor-pointer transition-colors ${
                       pending
                         ? "border-primary bg-primary/10 text-primary"
@@ -595,15 +599,15 @@ export default function TokenSaverClient() {
                     }`}
                     title={extraTitle}
                   >
-                    <input
-                      type="checkbox"
-                      className="w-3 h-3"
+                    <Checkbox
                       checked={pending}
                       onChange={() => togglePendingExtra(extra)}
+                      size="sm"
+                      ariaLabel={`Toggle pending install of [${extra}]`}
                     />
                     <span className="font-medium">[{extra}]</span>
                     <span className="opacity-70">not installed</span>
-                  </label>
+                  </div>
                 );
               })}
               {pendingExtras.length > 0 && (

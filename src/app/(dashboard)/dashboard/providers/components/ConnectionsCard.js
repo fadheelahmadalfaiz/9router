@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
 import PropTypes from "prop-types";
-import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
+import { Card, Badge, Button, Modal, Select, Toggle, Checkbox, EditConnectionModal, ConfirmModal } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
 
 // ── CooldownTimer ──────────────────────────────────────────────
@@ -103,12 +103,12 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, isSel
   return (
     <div className={`group flex flex-col gap-3 p-2 rounded-lg sm:flex-row sm:items-center sm:justify-between hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors ${connection.isActive === false ? "opacity-60" : ""}`}>
       <div className="flex w-full min-w-0 flex-1 items-start gap-3 sm:items-center">
-        <input
-          type="checkbox"
+        <Checkbox
           checked={!!isSelected}
           onChange={onToggleSelect}
-          aria-label={`Select ${displayName}`}
-          className="mt-1 size-4 shrink-0 rounded border-black/20 text-primary focus:ring-primary dark:border-white/20"
+          size="sm"
+          ariaLabel={`Select ${displayName}`}
+          className="mt-1"
         />
         <div className="flex flex-col">
           <button onClick={onMoveUp} disabled={isFirst} className={`p-0.5 rounded ${isFirst ? "text-text-muted/30 cursor-not-allowed" : "hover:bg-sidebar text-text-muted hover:text-primary"}`}>
@@ -555,15 +555,13 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
         ) : (
           <>
             <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]">
-              <label className="flex cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary">
-                <input
-                  type="checkbox"
-                  checked={allSelected}
-                  onChange={toggleSelectAll}
-                  className="size-3.5 rounded border-gray-300 text-primary focus:ring-primary"
-                />
-                {allSelected ? "Unselect All" : "Select All"}
-              </label>
+              <Checkbox
+                checked={allSelected}
+                onChange={toggleSelectAll}
+                size="sm"
+                label={allSelected ? "Unselect All" : "Select All"}
+                className="text-xs text-text-muted hover:text-primary"
+              />
               <span className="text-[11px] text-text-muted">{connections.length} total</span>
             </div>
 

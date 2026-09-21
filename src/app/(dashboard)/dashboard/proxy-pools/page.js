@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { Badge, Button, Card, CardSkeleton, Input, Modal, Toggle, ConfirmModal } from "@/shared/components";
+import { Badge, Button, Card, CardSkeleton, Input, Modal, Toggle, Checkbox, ConfirmModal } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
 
 function getStatusVariant(status) {
@@ -639,15 +639,13 @@ export default function ProxyPoolsPage() {
       <Card>
         <div className="mb-4 flex flex-wrap items-center gap-2">
           {proxyPools.length > 0 && (
-            <label className="flex items-center gap-1.5 text-xs text-text-muted cursor-pointer">
-              <input
-                type="checkbox"
-                checked={allSelected}
-                onChange={toggleSelectAll}
-                className="size-4 rounded border-black/20 dark:border-white/20"
-              />
-              {allSelected ? "Unselect all" : "Select all"}
-            </label>
+            <Checkbox
+              checked={allSelected}
+              onChange={toggleSelectAll}
+              size="sm"
+              label={allSelected ? "Unselect all" : "Select all"}
+              className="text-xs text-text-muted cursor-pointer"
+            />
           )}
           <Badge variant="default">Total: {proxyPools.length}</Badge>
           <Badge variant="success">Active: {activeCount}</Badge>
@@ -701,11 +699,12 @@ export default function ProxyPoolsPage() {
             {proxyPools.map((pool) => (
               <div key={pool.id} className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-start gap-3 min-w-0 flex-1">
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={selectedIds.includes(pool.id)}
                     onChange={() => toggleSelect(pool.id)}
-                    className="mt-1 size-4 shrink-0 rounded border-black/20 dark:border-white/20"
+                    size="sm"
+                    ariaLabel={`Select ${pool.name}`}
+                    className="mt-1"
                   />
                   <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">

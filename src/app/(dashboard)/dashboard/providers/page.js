@@ -8,6 +8,7 @@ import {
   Badge,
   Button,
   Toggle,
+  Checkbox,
 } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
@@ -808,12 +809,12 @@ function ProviderCard({ providerId, provider, stats, authType, onToggle, bulkSel
   return (
     <div className="relative">
       {onToggleBulkSelect && (
-        <input
-          type="checkbox"
+        <Checkbox
           checked={!!bulkSelected}
           onChange={onToggleBulkSelect}
-          aria-label={`Select ${provider.name}`}
-          className="absolute -top-1 -left-1 z-10 size-4 rounded border-black/30 bg-background text-primary shadow-sm focus:ring-primary dark:border-white/30"
+          size="sm"
+          ariaLabel={`Select ${provider.name}`}
+          className="absolute -top-1 -left-1 z-10 bg-background shadow-sm"
         />
       )}
     <Link href={`/dashboard/providers/${providerId}`} className="group min-w-0">
@@ -951,12 +952,12 @@ function ApiKeyProviderCard({
   return (
     <div className="relative">
       {onToggleBulkSelect && (
-        <input
-          type="checkbox"
+        <Checkbox
           checked={!!bulkSelected}
           onChange={onToggleBulkSelect}
-          aria-label={`Select ${provider.name}`}
-          className="absolute -top-1 -left-1 z-10 size-4 rounded border-black/30 bg-background text-primary shadow-sm focus:ring-primary dark:border-white/30"
+          size="sm"
+          ariaLabel={`Select ${provider.name}`}
+          className="absolute -top-1 -left-1 z-10 bg-background shadow-sm"
         />
       )}
     <Link href={`/dashboard/providers/${providerId}`} className="group min-w-0">

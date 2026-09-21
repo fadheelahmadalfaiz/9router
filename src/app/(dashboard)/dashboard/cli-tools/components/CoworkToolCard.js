@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Card, Button, ManualConfigModal, ComboFormModal, McpMarketplaceModal, ModelSelectModal } from "@/shared/components";
+import { Card, Button, ManualConfigModal, ComboFormModal, McpMarketplaceModal, ModelSelectModal, Checkbox } from "@/shared/components";
 import Image from "next/image";
 import BaseUrlSelect from "./BaseUrlSelect";
 import { rememberEndpoint } from "./cliEndpointPresets";
@@ -410,21 +410,19 @@ export default function CoworkToolCard({
                       const exaEnabled = plugins.some((p) => p.name === "exa");
                       const exaDef = (status?.defaultPlugins || []).find((d) => d.name === "exa");
                       return (
-                        <label className="flex items-start gap-2 cursor-pointer px-2 py-1.5 bg-surface rounded border border-border">
-                          <input
-                            type="checkbox"
+                        <div role="button" tabIndex={0} onClick={() => { if (!exaEnabled && exaDef) setPlugins([...plugins.filter((p) => p.name !== "exa"), exaDef]); else setPlugins(plugins.filter((p) => p.name !== "exa")); }} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (!exaEnabled && exaDef) setPlugins([...plugins.filter((p) => p.name !== "exa"), exaDef]); else setPlugins(plugins.filter((p) => p.name !== "exa")); } }} className="flex items-start gap-2 cursor-pointer px-2 py-1.5 bg-surface rounded border border-border">
+                          <Checkbox
                             checked={exaEnabled}
-                            onChange={(e) => {
-                              if (e.target.checked && exaDef) setPlugins([...plugins.filter((p) => p.name !== "exa"), exaDef]);
-                              else setPlugins(plugins.filter((p) => p.name !== "exa"));
-                            }}
+                            onChange={(v) => { if (v && exaDef) setPlugins([...plugins.filter((p) => p.name !== "exa"), exaDef]); else setPlugins(plugins.filter((p) => p.name !== "exa")); }}
+                            size="sm"
+                            ariaLabel="Web Search & Fetch (Exa)"
                             className="mt-0.5"
                           />
                           <div className="flex-1 min-w-0">
                             <div className="text-xs font-medium">Web Search & Fetch (Exa)</div>
                             <p className="text-[10px] text-text-muted leading-snug">Replaces built-in WebSearch/WebFetch. Auto-strips duplicates from tool list.</p>
                           </div>
-                        </label>
+                        </div>
                       );
                     })()}
                     {(() => {
@@ -432,11 +430,12 @@ export default function CoworkToolCard({
                       if (!browserDef) return null;
                       const browserEnabled = localPlugins.includes("browsermcp");
                       return (
-                        <label className="flex items-start gap-2 cursor-pointer px-2 py-1.5 bg-surface rounded border border-border">
-                          <input
-                            type="checkbox"
+                        <div role="button" tabIndex={0} onClick={() => setLocalPlugins(browserEnabled ? localPlugins.filter((n) => n !== "browsermcp") : [...localPlugins, "browsermcp"])} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setLocalPlugins(browserEnabled ? localPlugins.filter((n) => n !== "browsermcp") : [...localPlugins, "browsermcp"]); } }} className="flex items-start gap-2 cursor-pointer px-2 py-1.5 bg-surface rounded border border-border">
+                          <Checkbox
                             checked={browserEnabled}
-                            onChange={(e) => setLocalPlugins(e.target.checked ? [...localPlugins, "browsermcp"] : localPlugins.filter((n) => n !== "browsermcp"))}
+                            onChange={(v) => setLocalPlugins(v ? [...localPlugins, "browsermcp"] : localPlugins.filter((n) => n !== "browsermcp"))}
+                            size="sm"
+                            ariaLabel="Browser Control (Browser MCP)"
                             className="mt-0.5"
                           />
                           <div className="flex-1 min-w-0">
@@ -446,7 +445,7 @@ export default function CoworkToolCard({
                               <a href={browserDef.extensionUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline">Install Chrome extension</a>
                             </p>
                           </div>
-                        </label>
+                        </div>
                       );
                     })()}
                   </div>
@@ -461,11 +460,12 @@ export default function CoworkToolCard({
                         {status.localStdioPlugins.filter((p) => p.name !== "browsermcp").map((p) => {
                           const enabled = localPlugins.includes(p.name);
                           return (
-                            <label key={p.name} className="flex items-start gap-2 cursor-pointer">
-                              <input
-                                type="checkbox"
+                            <div key={p.name} role="button" tabIndex={0} onClick={() => setLocalPlugins(enabled ? localPlugins.filter((n) => n !== p.name) : [...localPlugins, p.name])} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setLocalPlugins(enabled ? localPlugins.filter((n) => n !== p.name) : [...localPlugins, p.name]); } }} className="flex items-start gap-2 cursor-pointer">
+                              <Checkbox
                                 checked={enabled}
-                                onChange={(e) => setLocalPlugins(e.target.checked ? [...localPlugins, p.name] : localPlugins.filter((n) => n !== p.name))}
+                                onChange={(v) => setLocalPlugins(v ? [...localPlugins, p.name] : localPlugins.filter((n) => n !== p.name))}
+                                size="sm"
+                                ariaLabel={p.title}
                                 className="mt-0.5"
                               />
                               <div className="flex-1 min-w-0">
@@ -478,7 +478,7 @@ export default function CoworkToolCard({
                                   <a href={p.extensionUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-primary underline">Install Chrome extension</a>
                                 )}
                               </div>
-                            </label>
+                            </div>
                           );
                         })}
                       </div>
