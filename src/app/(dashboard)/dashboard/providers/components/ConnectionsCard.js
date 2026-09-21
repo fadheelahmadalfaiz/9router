@@ -31,7 +31,7 @@ function CooldownTimer({ until }) {
 CooldownTimer.propTypes = { until: PropTypes.string.isRequired };
 
 // ── ConnectionRow ──────────────────────────────────────────────
-function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, isSelected, onToggleSelect, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete }) {
+function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, isSelected, onToggleSelect, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onCopyKey, onEdit, onDelete }) {
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
   const [updatingProxy, setUpdatingProxy] = useState(false);
   const [isCooldown, setIsCooldown] = useState(false);
@@ -167,6 +167,17 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, isSel
             <span className="material-symbols-outlined text-[18px]">edit</span>
             <span className="text-[10px] leading-tight">Edit</span>
           </button>
+          {onCopyKey && (
+            <button
+              onClick={onCopyKey}
+              title="Reveal & copy API key"
+              aria-label={`Reveal and copy API key for ${displayName}`}
+              className="flex flex-col items-center px-2 py-1 rounded hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-primary"
+            >
+              <span className="material-symbols-outlined text-[18px]">content_copy</span>
+              <span className="text-[10px] leading-tight">Copy</span>
+            </button>
+          )}
           <button onClick={onDelete} className="flex flex-col items-center px-2 py-1 rounded hover:bg-red-500/10 text-red-500">
             <span className="material-symbols-outlined text-[18px]">delete</span>
             <span className="text-[10px] leading-tight">Delete</span>
@@ -199,6 +210,7 @@ ConnectionRow.propTypes = {
   onMoveDown: PropTypes.func.isRequired,
   onToggleActive: PropTypes.func.isRequired,
   onUpdateProxy: PropTypes.func,
+  onCopyKey: PropTypes.func,
   onEdit: PropTypes.func.isRequired,
   onDelete: PropTypes.func.isRequired,
 };
@@ -303,6 +315,137 @@ AddApiKeyModal.propTypes = {
   onClose: PropTypes.func.isRequired,
 };
 
+// ── RevealKeyModal ─────────────────────────────────────────────
+// Re-authenticated reveal of a single connection's API key. Posts the dashboard
+// password to /api/providers/:id/reveal, copies the returned value to the
+// clipboard exactly once, and closes. The password is never persisted.
+function RevealKeyModal({ isOpen, connection, onClose, onSuccess, onError }) {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setPassword("");
+      setError("");
+      setBusy(false);
+      queueMicrotask(() => inputRef.current?.focus());
+    }
+  }, [isOpen]);
+
+  if (!isOpen || !connection) return null;
+
+  const fieldHint = connection.authType === "cookie"
+    ? "Cookie access token"
+    : "API key";
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!password || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/providers/${connection.id}/reveal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data?.error || "Failed to reveal credential";
+        setError(msg);
+        onError?.(msg);
+        return;
+      }
+      if (!data?.value) {
+        setError("No secret stored for this connection");
+        return;
+      }
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(data.value);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.value = data.value;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+        }
+        onSuccess?.(`${fieldHint} copied to clipboard`);
+      } catch {
+        onError?.("Revealed but clipboard write failed — paste manually");
+      }
+      setPassword("");
+      onClose();
+    } catch (err) {
+      setError(err?.message || "Network error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={() => !busy && onClose()}
+      title={`Reveal ${fieldHint}`}
+      size="sm"
+    >
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <p className="text-xs text-text-muted leading-relaxed">
+          Enter your dashboard password to reveal the {fieldHint.toLowerCase()} for
+          <span className="font-medium text-text-main"> {connection.name || connection.email || connection.id}</span>.
+          The value is copied to clipboard once and never stored by the UI.
+        </p>
+        <div>
+          <label className="text-xs text-text-muted mb-1 block">Dashboard password</label>
+          <input
+            ref={inputRef}
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            disabled={busy}
+            autoComplete="current-password"
+            className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary disabled:opacity-50"
+          />
+        </div>
+        {error && (
+          <p className="text-xs text-red-500">{error}</p>
+        )}
+        <div className="flex gap-2">
+          <Button
+            type="submit"
+            fullWidth
+            disabled={!password || busy}
+          >
+            {busy ? "Revealing…" : "Reveal & Copy"}
+          </Button>
+          <Button type="button" variant="ghost" fullWidth onClick={() => !busy && onClose()} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+RevealKeyModal.propTypes = {
+  isOpen: PropTypes.bool.isRequired,
+  connection: PropTypes.shape({
+    id: PropTypes.string,
+    name: PropTypes.string,
+    email: PropTypes.string,
+    authType: PropTypes.string,
+  }),
+  onClose: PropTypes.func.isRequired,
+  onSuccess: PropTypes.func,
+  onError: PropTypes.func,
+};
+
 // ── ConnectionsCard ────────────────────────────────────────────
 // Self-contained card: fetches, displays and manages all connections for a provider.
 export default function ConnectionsCard({ providerId, isOAuth }) {
@@ -318,6 +461,7 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [showBulkProxyModal, setShowBulkProxyModal] = useState(false);
+  const [revealTarget, setRevealTarget] = useState(null);
   const notify = useNotificationStore();
 
   const fetch_ = useCallback(async () => {
@@ -516,6 +660,13 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
     }
   };
 
+  const openRevealModal = (connection) => {
+    setRevealTarget(connection);
+  };
+  const closeRevealModal = () => {
+    setRevealTarget(null);
+  };
+
   if (loading) return <Card><div className="h-20 animate-pulse bg-black/5 rounded-lg" /></Card>;
 
   return (
@@ -606,6 +757,7 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
                   onMoveDown={() => handleSwapPriority(idx, idx + 1)}
                   onToggleActive={(isActive) => handleToggleActive(conn.id, isActive)}
                   onUpdateProxy={(poolId) => handleUpdateProxy(conn.id, poolId)}
+                  onCopyKey={() => openRevealModal(conn)}
                   onEdit={() => { setSelectedConnection(conn); setShowEditModal(true); }}
                   onDelete={() => handleDelete(conn.id)}
                 />
@@ -689,6 +841,15 @@ export default function ConnectionsCard({ providerId, isOAuth }) {
           </Button>
         </div>
       </Modal>
+
+      {/* Reveal & Copy API Key Modal */}
+      <RevealKeyModal
+        isOpen={!!revealTarget}
+        connection={revealTarget}
+        onClose={closeRevealModal}
+        onSuccess={(message) => notify.success(message)}
+        onError={(message) => notify.error(message)}
+      />
     </>
   );
 }
