@@ -99,16 +99,6 @@ export default function ProviderDetailPage() {
   const [importingQoderModels, setImportingQoderModels] = useState(false);
   const { copied, copy } = useCopyToClipboard();
 
-  // Local API endpoint URL — derived from window origin so external tunnel URLs
-  // (set on /dashboard/endpoint) are NOT shown here; users copy the URL their
-  // tools will actually reach on this dashboard host.
-  const [apiBaseUrl, setApiBaseUrl] = useState("/v1");
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      queueMicrotask(() => setApiBaseUrl(`${window.location.origin}/v1`));
-    }
-  }, []);
-
   const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
 
   const openOAuthConnection = () => {
@@ -1545,34 +1535,6 @@ export default function ProviderDetailPage() {
           </div>
         </div>
       </div>
-
-      {/* API Endpoint — copy URL for use with this provider via 9router */}
-      <Card padding="sm">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="material-symbols-outlined text-primary text-[18px]">api</span>
-            <span className="text-xs font-medium text-text-muted">API Endpoint</span>
-          </div>
-          <Input
-            value={apiBaseUrl}
-            readOnly
-            onClick={(e) => e.currentTarget.select()}
-            aria-label="API endpoint URL"
-            className="flex-1 font-mono text-xs min-w-0"
-          />
-          <button
-            type="button"
-            onClick={() => copy(apiBaseUrl, "provider_api_url")}
-            title="Copy API URL"
-            aria-label="Copy API URL"
-            className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-colors shrink-0"
-          >
-            <span className="material-symbols-outlined text-[18px]">
-              {copied === "provider_api_url" ? "check" : "content_copy"}
-            </span>
-          </button>
-        </div>
-      </Card>
 
       {providerInfo.deprecated && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
