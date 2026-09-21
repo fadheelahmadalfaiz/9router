@@ -1626,53 +1626,9 @@ export default function ProviderDetailPage() {
         <NoAuthProxyCard providerId={providerId} />
       ) : (
         <Card>
-          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <h2 className="text-lg font-semibold">Connections</h2>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
-              {connections.length > 0 && proxyPools.length > 0 && (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  icon="lan"
-                  onClick={() => setShowBulkProxyModal(true)}
-                >
-                  Apply Proxy
-                </Button>
-              )}
-              {connections.length > 0 && (
-                <>
-                  {selectedConnectionIds.length > 0 && (
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      icon="delete"
-                      onClick={handleBulkDelete}
-                    >
-                      Delete Selected ({selectedConnectionIds.length})
-                    </Button>
-                  )}
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    icon="sync"
-                    onClick={handleRunOneByOneTest}
-                    disabled={oneByOneRunning}
-                  >
-                    {oneByOneRunning ? "Testing Connection One-by-One..." : "Test Connection One-by-One"}
-                  </Button>
-                  {oneByOneRunning && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      icon="stop"
-                      onClick={handleStopOneByOneTest}
-                      disabled={oneByOneStopping}
-                    >
-                      {oneByOneStopping ? "Stopping..." : "Stop"}
-                    </Button>
-                  )}
-                </>
-              )}
               {/* Round Robin toggle */}
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-text-muted font-medium">Round Robin</span>
@@ -1703,6 +1659,51 @@ export default function ProviderDetailPage() {
               </div>
             </div>
           </div>
+
+          {connections.length > 0 && (
+            <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-black/[0.03] pb-3 dark:border-white/[0.03]">
+              {proxyPools.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon="lan"
+                  onClick={() => setShowBulkProxyModal(true)}
+                >
+                  Apply Proxy
+                </Button>
+              )}
+              {selectedConnectionIds.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="danger"
+                  icon="delete"
+                  onClick={handleBulkDelete}
+                >
+                  Delete Selected ({selectedConnectionIds.length})
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="secondary"
+                icon="sync"
+                onClick={handleRunOneByOneTest}
+                disabled={oneByOneRunning}
+              >
+                {oneByOneRunning ? "Testing Connection One-by-One..." : "Test Connection One-by-One"}
+              </Button>
+              {oneByOneRunning && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon="stop"
+                  onClick={handleStopOneByOneTest}
+                  disabled={oneByOneStopping}
+                >
+                  {oneByOneStopping ? "Stopping..." : "Stop"}
+                </Button>
+              )}
+            </div>
+          )}
 
           {connections.length === 0 ? (
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
