@@ -3,10 +3,6 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* Hide icon ligature text until font is ready */
-.material-symbols-outlined { opacity: 0; }
-.fonts-loaded .material-symbols-outlined { opacity: 1; transition: opacity .12s ease-out; }
-
 /* ============================================================
    9Router palette - citron primary, violet companion accent,
    neutral warm bases
@@ -374,7 +370,7 @@ input, textarea {
 
 /* Material Symbols */
 .material-symbols-outlined {
-  font-family: 'Material Symbols Outlined', sans-serif;
+  font-family: var(--font-material-symbols), 'Material Symbols Outlined', sans-serif;
   font-weight: normal;
   font-style: normal;
   font-size: 24px;
