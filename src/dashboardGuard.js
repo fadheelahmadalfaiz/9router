@@ -191,6 +191,19 @@ function isPublicApi(pathname) {
   return PUBLIC_API_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
+// Build the post-login URL with the original request path attached as
+// ?redirect=... so the login page can send the user back to where they were
+// after a successful authentication. Preserves query string and hash so that
+// filters / tabs / scroll position survive the round trip.
+function loginUrlFor(request) {
+  const url = new URL("/login", request.url);
+  const original = request.nextUrl?.pathname || "/dashboard";
+  const search = request.nextUrl?.search || "";
+  const fullPath = `${original}${search}`;
+  url.searchParams.set("redirect", fullPath);
+  return url;
+}
+
 export const __test__ = {
   isLocalRequest,
   isPublicLlmApi,
@@ -246,7 +259,7 @@ export async function proxy(request) {
           const tunnelHost = settings.tunnelUrl ? new URL(settings.tunnelUrl).hostname.toLowerCase() : "";
           const tailscaleHost = settings.tailscaleUrl ? new URL(settings.tailscaleUrl).hostname.toLowerCase() : "";
           if ((tunnelHost && host === tunnelHost) || (tailscaleHost && host === tailscaleHost)) {
-            return NextResponse.redirect(new URL("/login", request.url));
+            return NextResponse.redirect(loginUrlFor(request));
           }
         }
       }
@@ -263,11 +276,11 @@ export async function proxy(request) {
       if (await verifyDashboardAuthToken(token)) {
         return NextResponse.next();
       } else {
-        return NextResponse.redirect(new URL("/login", request.url));
+        return NextResponse.redirect(loginUrlFor(request));
       }
     }
 
-    return NextResponse.redirect(new URL("/login", request.url));
+    return NextResponse.redirect(loginUrlFor(request));
   }
 
   // Redirect / to /dashboard if logged in, or /dashboard if it's the root

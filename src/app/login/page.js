@@ -1,9 +1,26 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { Card, Button, Input } from "@/shared/components";
 
+// Returns a safe internal redirect target from ?redirect= or the default.
+// Rejects protocol-relative URLs (//evil.com), absolute URLs (https://evil.com),
+// and anything outside /dashboard to prevent open-redirect abuse.
+const DEFAULT_LOGIN_REDIRECT = "/dashboard";
+function safeRedirectTarget(raw) {
+  if (typeof raw !== "string" || !raw) return DEFAULT_LOGIN_REDIRECT;
+  if (!raw.startsWith("/")) return DEFAULT_LOGIN_REDIRECT;
+  if (raw.startsWith("//")) return DEFAULT_LOGIN_REDIRECT;
+  if (raw.includes("://")) return DEFAULT_LOGIN_REDIRECT;
+  if (!raw.startsWith("/dashboard")) return DEFAULT_LOGIN_REDIRECT;
+  return raw;
+}
+
 export default function LoginPage() {
+  const searchParams = useSearchParams();
+  const postLoginRedirect = safeRedirectTarget(searchParams.get("redirect"));
+
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [resetHint, setResetHint] = useState("");
@@ -41,7 +58,7 @@ export default function LoginPage() {
         if (res.ok) {
           const data = await res.json();
           if (data.authenticated === true || data.requireLogin === false) {
-            window.location.assign("/dashboard");
+            window.location.assign(postLoginRedirect);
             return;
           }
           setHasPassword(!!data.hasPassword);
@@ -61,7 +78,7 @@ export default function LoginPage() {
       }
     }
     checkAuth();
-  }, []);
+  }, [postLoginRedirect]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -82,7 +99,7 @@ export default function LoginPage() {
           setMustChange(true);
           return;
         }
-        window.location.assign("/dashboard");
+        window.location.assign(postLoginRedirect);
       } else {
         const data = await res.json();
         setError(data.error || "Invalid password");
@@ -108,7 +125,7 @@ export default function LoginPage() {
         body: JSON.stringify({ currentPassword: password, newPassword }),
       });
       if (res.ok) {
-        window.location.assign("/dashboard");
+        window.location.assign(postLoginRedirect);
       } else {
         const data = await res.json();
         setError(data.error || "Failed to set password");
