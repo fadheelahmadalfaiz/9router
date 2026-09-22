@@ -15,6 +15,7 @@ import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
 import { runSerialModelTests } from "@/shared/utils/serialModelTests";
+import { useNotificationStore } from "@/store/notificationStore";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
@@ -24,6 +25,7 @@ import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
+import RevealKeyModal from "./RevealKeyModal";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
@@ -97,7 +99,9 @@ export default function ProviderDetailPage() {
   const [oneByOneSummary, setOneByOneSummary] = useState(null);
   const stopOneByOneRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
+  const [revealTarget, setRevealTarget] = useState(null);
   const { copied, copy } = useCopyToClipboard();
+  const notify = useNotificationStore();
 
   const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
 
@@ -1123,6 +1127,7 @@ export default function ProviderDetailPage() {
                   setSelectedConnection(conn);
                   setShowEditModal(true);
                 }}
+                onCopyKey={() => setRevealTarget(conn)}
                 onDelete={() => handleDelete(conn.id)}
                 oneByOneStatus={oneByOneResults[conn.id] || null}
                 modelAssignmentOptions={assignmentModels}
@@ -2007,6 +2012,15 @@ export default function ProviderDetailPage() {
         proxyPools={proxyPools}
         onSave={handleUpdateConnection}
         onClose={() => setShowEditModal(false)}
+      />
+
+      {/* Reveal & Copy API Key Modal */}
+      <RevealKeyModal
+        isOpen={!!revealTarget}
+        connection={revealTarget}
+        onClose={() => setRevealTarget(null)}
+        onSuccess={(message) => notify.success(message)}
+        onError={(message) => notify.error(message)}
       />
       {isCompatible && (
         <EditCompatibleNodeModal
