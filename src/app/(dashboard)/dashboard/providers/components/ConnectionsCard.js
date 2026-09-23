@@ -316,21 +316,49 @@ AddApiKeyModal.propTypes = {
 };
 
 // ── RevealKeyModal ─────────────────────────────────────────────
-// Re-authenticated reveal of a single connection's API key. Posts the dashboard
-// password to /api/providers/:id/reveal, copies the returned value to the
-// clipboard exactly once, and closes. The password is never persisted.
+// Re-authenticated reveal of a single connection's API key. Two phases:
+//   1. Password entry — verify the dashboard password
+//   2. Revealed — display the secret in a read-only field with a mask toggle
+//      and an explicit "Copy to clipboard" button. The user decides when to
+//      copy; we never auto-copy.
+//
+// The secret lives in component state only; closing the modal clears it.
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  const ok = document.execCommand("copy");
+  document.body.removeChild(ta);
+  if (!ok) throw new Error("Clipboard copy failed");
+}
+
 function RevealKeyModal({ isOpen, connection, onClose, onSuccess, onError }) {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const inputRef = useRef(null);
+  const [revealedValue, setRevealedValue] = useState(null);
+  const [showKey, setShowKey] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const pwdInputRef = useRef(null);
+  const keyInputRef = useRef(null);
 
+  // Reset everything when the modal closes/reopens so secrets never linger.
   useEffect(() => {
     if (isOpen) {
       setPassword("");
       setError("");
       setBusy(false);
-      queueMicrotask(() => inputRef.current?.focus());
+      setRevealedValue(null);
+      setShowKey(true);
+      setCopied(false);
+      queueMicrotask(() => pwdInputRef.current?.focus());
     }
   }, [isOpen]);
 
@@ -340,8 +368,8 @@ function RevealKeyModal({ isOpen, connection, onClose, onSuccess, onError }) {
     ? "Cookie access token"
     : "API key";
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const handleReveal = async (e) => {
+    e?.preventDefault?.();
     if (!password || busy) return;
     setBusy(true);
     setError("");
@@ -362,25 +390,10 @@ function RevealKeyModal({ isOpen, connection, onClose, onSuccess, onError }) {
         setError("No secret stored for this connection");
         return;
       }
-      try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(data.value);
-        } else {
-          const ta = document.createElement("textarea");
-          ta.value = data.value;
-          ta.style.position = "fixed";
-          ta.style.opacity = "0";
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand("copy");
-          document.body.removeChild(ta);
-        }
-        onSuccess?.(`${fieldHint} copied to clipboard`);
-      } catch {
-        onError?.("Revealed but clipboard write failed — paste manually");
-      }
+      setRevealedValue(data.value);
       setPassword("");
-      onClose();
+      // Auto-select the value so a quick Cmd-C copies it without clicking.
+      queueMicrotask(() => keyInputRef.current?.select());
     } catch (err) {
       setError(err?.message || "Network error");
     } finally {
@@ -388,6 +401,81 @@ function RevealKeyModal({ isOpen, connection, onClose, onSuccess, onError }) {
     }
   };
 
+  const handleCopy = async () => {
+    if (!revealedValue) return;
+    try {
+      await copyTextToClipboard(revealedValue);
+      setCopied(true);
+      onSuccess?.(`${fieldHint} copied to clipboard`);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      onError?.("Clipboard write failed — select the text and copy manually");
+    }
+  };
+
+  // Phase 2: secret is on screen. Show field with optional mask + copy button.
+  if (revealedValue !== null) {
+    const displayValue = showKey ? revealedValue : "•".repeat(Math.min(revealedValue.length, 32));
+    return (
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title={`${fieldHint}: ${connection.name || connection.email || connection.id}`}
+        size="md"
+      >
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <input
+              ref={keyInputRef}
+              type="text"
+              readOnly
+              value={displayValue}
+              onFocus={(e) => e.currentTarget.select()}
+              onClick={(e) => e.currentTarget.select()}
+              aria-label={`${fieldHint} value`}
+              className="flex-1 px-3 py-2 text-xs font-mono border border-border rounded-lg bg-background focus:outline-none focus:border-primary select-all"
+            />
+            <button
+              type="button"
+              onClick={() => setShowKey((v) => !v)}
+              title={showKey ? "Hide value" : "Show value"}
+              aria-label={showKey ? "Hide value" : "Show value"}
+              className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-colors shrink-0"
+            >
+              <span className="material-symbols-outlined text-[18px]">
+                {showKey ? "visibility_off" : "visibility"}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={handleCopy}
+              title="Copy to clipboard"
+              aria-label="Copy to clipboard"
+              className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-colors shrink-0"
+            >
+              <span className="material-symbols-outlined text-[18px]">
+                {copied ? "check" : "content_copy"}
+              </span>
+            </button>
+          </div>
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            <span className="material-symbols-outlined text-[14px] align-middle mr-1">warning</span>
+            Treat this like a password. Don't paste it in public channels.
+          </p>
+          <div className="flex gap-2">
+            <Button onClick={handleCopy} disabled={!revealedValue} fullWidth>
+              {copied ? "Copied!" : "Copy to Clipboard"}
+            </Button>
+            <Button variant="ghost" fullWidth onClick={onClose}>
+              Done
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
+  // Phase 1: ask for the dashboard password before revealing.
   return (
     <Modal
       isOpen={isOpen}
@@ -395,16 +483,16 @@ function RevealKeyModal({ isOpen, connection, onClose, onSuccess, onError }) {
       title={`Reveal ${fieldHint}`}
       size="sm"
     >
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      <form onSubmit={handleReveal} className="flex flex-col gap-4">
         <p className="text-xs text-text-muted leading-relaxed">
-          Enter your dashboard password to reveal the {fieldHint.toLowerCase()} for
+          Enter your dashboard password to display the {fieldHint.toLowerCase()} for
           <span className="font-medium text-text-main"> {connection.name || connection.email || connection.id}</span>.
-          The value is copied to clipboard once and never stored by the UI.
+          The value stays in this dialog until you close it.
         </p>
         <div>
           <label className="text-xs text-text-muted mb-1 block">Dashboard password</label>
           <input
-            ref={inputRef}
+            ref={pwdInputRef}
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -422,7 +510,7 @@ function RevealKeyModal({ isOpen, connection, onClose, onSuccess, onError }) {
             fullWidth
             disabled={!password || busy}
           >
-            {busy ? "Revealing…" : "Reveal & Copy"}
+            {busy ? "Revealing…" : "Reveal"}
           </Button>
           <Button type="button" variant="ghost" fullWidth onClick={() => !busy && onClose()} disabled={busy}>
             Cancel
