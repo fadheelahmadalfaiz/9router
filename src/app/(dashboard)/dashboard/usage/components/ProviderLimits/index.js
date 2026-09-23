@@ -43,6 +43,8 @@ import Card from "@/shared/components/Card";
 import { ConfirmModal, EditConnectionModal } from "@/shared/components";
 import { USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { useNotificationStore } from "@/store/notificationStore";
+import RevealKeyModal from "@/app/(dashboard)/dashboard/providers/[id]/RevealKeyModal";
 
 // Maps the stored providerSpecificData.authMethod to a human label for Kiro.
 // Values come from the Kiro connect flows: builder-id/idc (device code),
@@ -127,6 +129,7 @@ function formatTimeRemaining(value) {
 
 export default function ProviderLimits() {
   const { copied, copy } = useCopyToClipboard();
+  const notify = useNotificationStore();
   const [connections, setConnections] = useState([]);
   const [quotaData, setQuotaData] = useState({});
   const [loading, setLoading] = useState({});
@@ -145,6 +148,7 @@ export default function ProviderLimits() {
   const [resetCreditsState, setResetCreditsState] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState(null);
+  const [revealTarget, setRevealTarget] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
   const [providerFilter, setProviderFilter] = useState("all");
   const [providerOptions, setProviderOptions] = useState([]);
@@ -1201,6 +1205,21 @@ export default function ProviderLimits() {
                         </span>
                       </button>
                     </Tooltip>
+                    {conn.authType !== "oauth" && (
+                      <Tooltip text="Reveal & copy API key">
+                        <button
+                          type="button"
+                          onClick={() => setRevealTarget(conn)}
+                          disabled={rowBusy}
+                          aria-label="Reveal and copy API key"
+                          className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-primary transition-colors disabled:opacity-50"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">
+                            content_copy
+                          </span>
+                        </button>
+                      </Tooltip>
+                    )}
                     <Tooltip text="Delete connection">
                       <button
                         type="button"
@@ -1527,6 +1546,14 @@ export default function ProviderLimits() {
           setShowEditModal(false);
           setSelectedConnection(null);
         }}
+      />
+
+      <RevealKeyModal
+        isOpen={!!revealTarget}
+        connection={revealTarget}
+        onClose={() => setRevealTarget(null)}
+        onSuccess={(message) => notify.success(message)}
+        onError={(message) => notify.error(message)}
       />
     </div>
   );
