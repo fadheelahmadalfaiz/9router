@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { Card, Button, Input } from "@/shared/components";
+import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 // Returns a safe internal redirect target from ?redirect= or the default.
 // Rejects protocol-relative URLs (//evil.com), absolute URLs (https://evil.com),
@@ -17,11 +18,39 @@ function safeRedirectTarget(raw) {
   return raw;
 }
 
+const RESET_CLI_COMMAND = "9router settings reset-password";
+
+const STRENGTH_LABELS = ["", "Weak", "Weak", "Fair", "Good", "Strong"];
+const STRENGTH_BAR_CLASSES = [
+  "bg-border",
+  "bg-red-500",
+  "bg-red-500",
+  "bg-amber-500",
+  "bg-emerald-500",
+  "bg-emerald-500",
+];
+
+function getPasswordStrength(value) {
+  const v = String(value || "");
+  if (!v) return { score: 0, label: "" };
+  let score = 0;
+  if (v.length >= 8) score++;
+  if (v.length >= 12) score++;
+  if (/[a-z]/.test(v) && /[A-Z]/.test(v)) score++;
+  if (/\d/.test(v)) score++;
+  if (/[^A-Za-z0-9]/.test(v)) score++;
+  if (score > 4) score = 4;
+  return { score, label: STRENGTH_LABELS[score] };
+}
+
 export default function LoginForm() {
   const searchParams = useSearchParams();
   const postLoginRedirect = safeRedirectTarget(searchParams.get("redirect"));
 
+  const { copied, copy } = useCopyToClipboard();
+
   const [password, setPassword] = useState("");
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [error, setError] = useState("");
   const [resetHint, setResetHint] = useState("");
   const [retryAfter, setRetryAfter] = useState(0);
@@ -35,6 +64,8 @@ export default function LoginForm() {
   const [samlLoginLabel, setSamlLoginLabel] = useState("Sign in with SAML SSO");
   const [mustChange, setMustChange] = useState(false);
   const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
+  const [showNewPassword, setShowNewPassword] = useState(false);
 
   // Countdown for rate-limit
   useEffect(() => {
@@ -69,7 +100,6 @@ export default function LoginForm() {
           setSamlConfigured(data.samlConfigured === true);
           setSamlLoginLabel(data.samlLoginLabel || "Sign in with SAML SSO");
         } else {
-          // Safe fallback on non-OK response to avoid infinite loading state.
           setHasPassword(true);
         }
       } catch (err) {
@@ -113,11 +143,14 @@ export default function LoginForm() {
     }
   };
 
-  // Force a new password before entering the dashboard (default + remote).
   const handleSetNewPassword = async (e) => {
     e.preventDefault();
-    setLoading(true);
     setError("");
+    if (newPassword !== confirmNewPassword) {
+      setError("New passwords do not match.");
+      return;
+    }
+    setLoading(true);
     try {
       const res = await fetch("/api/settings", {
         method: "PATCH",
@@ -154,13 +187,33 @@ export default function LoginForm() {
 
   const passwordAvailable = authMode === "password" || authMode === "both" || !ssoAvailable;
 
-  // Show loading state while checking password
+  const newPasswordMismatch =
+    confirmNewPassword.length > 0 && newPassword !== confirmNewPassword;
+  const newPasswordStrength = getPasswordStrength(newPassword);
+
+  // Show skeleton matching final layout while checking session/password config.
   if (hasPassword === null) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-bg p-4">
-        <div className="text-center">
-          <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-          <p className="text-text-muted mt-4">Loading...</p>
+      <div className="min-h-screen flex items-center justify-center bg-bg p-4 relative overflow-hidden">
+        <div
+          className="landing-grid absolute inset-0 pointer-events-none"
+          aria-hidden="true"
+        />
+        <div className="relative z-10 w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="h-8 w-32 mx-auto rounded bg-sidebar/60 animate-pulse" />
+            <div className="h-3 w-72 mx-auto mt-3 rounded bg-sidebar/40 animate-pulse" />
+          </div>
+          <Card>
+            <div className="flex flex-col gap-4" aria-hidden="true">
+              <div className="flex flex-col gap-2">
+                <div className="h-3 w-16 rounded bg-sidebar/40 animate-pulse" />
+                <div className="h-9 w-full rounded-lg bg-sidebar/40 animate-pulse" />
+              </div>
+              <div className="h-9 w-full rounded-lg bg-sidebar/40 animate-pulse" />
+              <div className="h-3 w-48 mx-auto rounded bg-sidebar/40 animate-pulse" />
+            </div>
+          </Card>
         </div>
       </div>
     );
@@ -188,98 +241,218 @@ export default function LoginForm() {
               <p className="text-sm text-amber-600 dark:text-amber-400 text-center">
                 Set a new password before accessing the dashboard remotely.
               </p>
+
               <div className="flex flex-col gap-2">
-                <label className="text-sm font-medium">New password</label>
+                <label htmlFor="current-password" className="text-sm font-medium">
+                  Current password
+                </label>
                 <Input
-                  type="password"
-                  placeholder="Enter new password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
+                  id="current-password"
+                  type={showLoginPassword ? "text" : "password"}
+                  placeholder="Enter current password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
                   required
                   autoFocus
                 />
-                {error && <p className="text-xs text-red-500">{error}</p>}
               </div>
-              <Button type="submit" variant="primary" className="w-full" loading={loading} disabled={!newPassword}>
+
+              <div className="flex flex-col gap-2">
+                <label htmlFor="new-password" className="text-sm font-medium">
+                  New password
+                </label>
+                <div className="relative">
+                  <Input
+                    id="new-password"
+                    type={showNewPassword ? "text" : "password"}
+                    placeholder="Enter new password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    autoComplete="new-password"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPassword((s) => !s)}
+                    aria-label={showNewPassword ? "Hide new password" : "Show new password"}
+                    aria-pressed={showNewPassword}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded text-text-muted hover:text-text-primary transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">
+                      {showNewPassword ? "visibility_off" : "visibility"}
+                    </span>
+                  </button>
+                </div>
+                {newPassword && (
+                  <div className="flex items-center gap-2" aria-live="polite">
+                    <div className="flex gap-0.5 flex-1">
+                      {[1, 2, 3, 4].map((bar) => (
+                        <div
+                          key={bar}
+                          className={`h-1 flex-1 rounded ${
+                            bar <= newPasswordStrength.score
+                              ? STRENGTH_BAR_CLASSES[newPasswordStrength.score]
+                              : "bg-border"
+                          }`}
+                        />
+                      ))}
+                    </div>
+                    <span className="text-[10px] text-text-muted w-12 text-right">
+                      {newPasswordStrength.label}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label htmlFor="confirm-new-password" className="text-sm font-medium">
+                  Confirm new password
+                </label>
+                <Input
+                  id="confirm-new-password"
+                  type={showNewPassword ? "text" : "password"}
+                  placeholder="Re-enter new password"
+                  value={confirmNewPassword}
+                  onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  autoComplete="new-password"
+                  required
+                  aria-invalid={newPasswordMismatch || undefined}
+                  aria-describedby={newPasswordMismatch ? "confirm-password-error" : undefined}
+                />
+                {newPasswordMismatch && (
+                  <p id="confirm-password-error" className="text-xs text-red-500">
+                    Passwords do not match.
+                  </p>
+                )}
+              </div>
+
+              {error && <p className="text-xs text-red-500" role="alert">{error}</p>}
+
+              <Button
+                type="submit"
+                variant="primary"
+                className="w-full"
+                loading={loading}
+                disabled={!newPassword || newPasswordMismatch}
+              >
                 Set password
               </Button>
             </form>
           ) : (
-          <div className="flex flex-col gap-4">
-            {samlAvailable && (
-              <Button type="button" variant="primary" className="w-full" onClick={handleSamlLogin}>
-                {samlLoginLabel}
-              </Button>
-            )}
-
-            {oidcAvailable && (
-              <Button type="button" variant="primary" className="w-full" onClick={handleOidcLogin}>
-                {oidcLoginLabel}
-              </Button>
-            )}
-
-            {ssoAvailable && passwordAvailable && <div className="h-px bg-border/60" />}
-
-            {passwordAvailable ? (
-              <form onSubmit={handleLogin} className="flex flex-col gap-4">
-                {isSsoEnabled && !ssoAvailable && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400 text-center">
-                    {activeSsoType === "saml" ? "SAML SSO" : "OIDC"} login is enabled, but configuration is incomplete. Password login is still available for recovery.
-                  </p>
-                )}
-
-                {authMode === "both" && ssoAvailable && (
-                  <p className="text-xs text-text-muted text-center">
-                    Password and {activeSsoType === "saml" ? "SAML SSO" : "OIDC"} login are both enabled.
-                  </p>
-                )}
-
-                <div className="flex flex-col gap-2">
-                  <label className="text-sm font-medium">Password</label>
-                  <Input
-                    type="password"
-                    placeholder="Enter password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    autoFocus={!oidcAvailable}
-                  />
-                  {error && <p className="text-xs text-red-500">{error}</p>}
-                  {retryAfter > 0 && (
-                    <p className="text-xs text-amber-600 dark:text-amber-400">
-                      Locked. Retry in <span className="font-mono">{retryAfter}s</span>.
-                    </p>
-                  )}
-                  {resetHint && (
-                    <p className="text-xs text-text-muted">
-                      Forgot password? Open <code className="bg-sidebar px-1 rounded">9router</code> CLI on the host → <b>Settings</b> → <b>Reset Password to Default</b>.
-                    </p>
-                  )}
-                </div>
-
-                <Button
-                  type="submit"
-                  variant="primary"
-                  className="w-full"
-                  loading={loading}
-                  disabled={retryAfter > 0}
-                >
-                  {retryAfter > 0 ? `Wait ${retryAfter}s` : "Login"}
+            <div className="flex flex-col gap-4">
+              {samlAvailable && (
+                <Button type="button" variant="primary" className="w-full" onClick={handleSamlLogin}>
+                  {samlLoginLabel}
                 </Button>
+              )}
 
-                <p className="text-xs text-center text-text-muted mt-2">
-                  Default password is <code className="bg-sidebar px-1 rounded">123456</code>
-                </p>
-                {hasPassword === false && (
-                  <p className="text-xs text-center text-amber-600 dark:text-amber-400">
-                    Security risk: no password set. You will be asked to set one when logging in remotely.
-                  </p>
-                )}
-              </form>
-            ) : (
-              error && <p className="text-xs text-red-500">{error}</p>
-            )}
-          </div>
+              {oidcAvailable && (
+                <Button type="button" variant="primary" className="w-full" onClick={handleOidcLogin}>
+                  {oidcLoginLabel}
+                </Button>
+              )}
+
+              {ssoAvailable && passwordAvailable && <div className="h-px bg-border/60" />}
+
+              {passwordAvailable ? (
+                <form onSubmit={handleLogin} className="flex flex-col gap-4">
+                  {isSsoEnabled && !ssoAvailable && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400 text-center">
+                      {activeSsoType === "saml" ? "SAML SSO" : "OIDC"} login is enabled, but configuration is incomplete. Password login is still available for recovery.
+                    </p>
+                  )}
+
+                  {authMode === "both" && ssoAvailable && (
+                    <p className="text-xs text-text-muted text-center">
+                      Password and {activeSsoType === "saml" ? "SAML SSO" : "OIDC"} login are both enabled.
+                    </p>
+                  )}
+
+                  <div className="flex flex-col gap-2">
+                    <label htmlFor="password" className="text-sm font-medium">
+                      Password
+                    </label>
+                    <div className="relative">
+                      <Input
+                        id="password"
+                        type={showLoginPassword ? "text" : "password"}
+                        placeholder="Enter password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        autoComplete="current-password"
+                        required
+                        autoFocus={!oidcAvailable}
+                        aria-invalid={error ? "true" : undefined}
+                        aria-describedby={error ? "login-error" : undefined}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowLoginPassword((s) => !s)}
+                        aria-label={showLoginPassword ? "Hide password" : "Show password"}
+                        aria-pressed={showLoginPassword}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 flex h-7 w-7 items-center justify-center rounded text-text-muted hover:text-text-primary transition-colors"
+                      >
+                        <span className="material-symbols-outlined text-[18px]">
+                          {showLoginPassword ? "visibility_off" : "visibility"}
+                        </span>
+                      </button>
+                    </div>
+                    {error && (
+                      <p id="login-error" className="text-xs text-red-500" role="alert">
+                        {error}
+                      </p>
+                    )}
+                    {retryAfter > 0 && (
+                      <p className="text-xs text-amber-600 dark:text-amber-400" role="status" aria-live="polite">
+                        Locked. Retry in <span className="font-mono">{retryAfter}s</span>.
+                      </p>
+                    )}
+                  </div>
+
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    className="w-full"
+                    loading={loading}
+                    disabled={retryAfter > 0}
+                  >
+                    {retryAfter > 0 ? `Wait ${retryAfter}s` : "Login"}
+                  </Button>
+
+                  <div className="mt-1 flex flex-col gap-1.5 rounded-md border border-border/60 bg-sidebar/40 px-3 py-2 text-[11px] text-text-muted">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>Trouble signing in?</span>
+                      <button
+                        type="button"
+                        onClick={() => copy(RESET_CLI_COMMAND, "login-cli-cmd")}
+                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-text-muted hover:bg-sidebar hover:text-text-primary transition-colors"
+                        aria-label="Copy reset command"
+                      >
+                        <span className="material-symbols-outlined text-[13px]">
+                          {copied === "login-cli-cmd" ? "check" : "content_copy"}
+                        </span>
+                        <span>Copy reset command</span>
+                      </button>
+                    </div>
+                    <code className="block break-all bg-background/50 px-1.5 py-1 rounded font-mono text-[10px]">
+                      {RESET_CLI_COMMAND}
+                    </code>
+                    <span className="opacity-80">
+                      Run on the host. Requires CLI access to the 9router process.
+                    </span>
+                  </div>
+
+                  {hasPassword === false && (
+                    <p className="text-xs text-center text-amber-600 dark:text-amber-400">
+                      Security risk: no password set. You will be asked to set one when logging in remotely.
+                    </p>
+                  )}
+                </form>
+              ) : (
+                error && <p className="text-xs text-red-500" role="alert">{error}</p>
+              )}
+            </div>
           )}
         </Card>
       </div>
