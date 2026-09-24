@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import PropTypes from "prop-types";
 import {
   Card,
@@ -97,7 +98,35 @@ function getConnectionErrorTag(connection) {
 
 const APIKEY_INITIAL_VISIBLE = 20;
 
+const STATUS_FILTER_VALUES = new Set(STATUS_FILTER_OPTIONS.map((option) => option.value));
+
+function getProvidersUrlState(searchParams) {
+  const statusParam = searchParams.get("status") || "all";
+  return {
+    statusFilter: STATUS_FILTER_VALUES.has(statusParam) ? statusParam : "all",
+  };
+}
+
+function buildProvidersUrl(pathname, searchParamsString, state) {
+  const params = new URLSearchParams(searchParamsString);
+  if (state.statusFilter && state.statusFilter !== "all") {
+    params.set("status", state.statusFilter);
+  } else {
+    params.delete("status");
+  }
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
+
 export default function ProvidersPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const searchParamsString = searchParams.toString();
+  const initialUrlState = useMemo(
+    () => getProvidersUrlState(new URLSearchParams(searchParamsString)),
+    [searchParamsString],
+  );
   const [connections, setConnections] = useState([]);
   const [providerNodes, setProviderNodes] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -107,10 +136,32 @@ export default function ProvidersPage() {
     useState(false);
   const [testingMode, setTestingMode] = useState(null);
   const [testResults, setTestResults] = useState(null);
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState(initialUrlState.statusFilter);
   const [selectedProviderIds, setSelectedProviderIds] = useState([]);
   const [bulkTesting, setBulkTesting] = useState(false);
   const notify = useNotificationStore();
+
+  const replaceProvidersUrlState = useCallback(
+    (updates) => {
+      const currentState = getProvidersUrlState(new URLSearchParams(searchParamsString));
+      const nextUrl = buildProvidersUrl(pathname, searchParamsString, {
+        ...currentState,
+        ...updates,
+      });
+      const currentUrl = searchParamsString
+        ? `${pathname}?${searchParamsString}`
+        : pathname;
+      if (nextUrl === currentUrl) return;
+      router.replace(nextUrl, { scroll: false });
+    },
+    [pathname, router, searchParamsString],
+  );
+
+  useEffect(() => {
+    setStatusFilter((prev) =>
+      prev === initialUrlState.statusFilter ? prev : initialUrlState.statusFilter,
+    );
+  }, [initialUrlState.statusFilter]);
   const searchQuery = useHeaderSearchStore((s) => s.query);
   const registerSearch = useHeaderSearchStore((s) => s.register);
   const unregisterSearch = useHeaderSearchStore((s) => s.unregister);
@@ -446,7 +497,11 @@ export default function ProvidersPage() {
       <div className="flex items-center justify-end">
         <select
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
+          onChange={(e) => {
+            const nextValue = e.target.value;
+            setStatusFilter(nextValue);
+            replaceProvidersUrlState({ statusFilter: nextValue });
+          }}
           className="h-8 rounded-lg border border-black/10 bg-black/[0.02] px-2 text-xs text-text-primary outline-none transition-colors hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/10"
           aria-label="Filter providers by connection status"
         >
