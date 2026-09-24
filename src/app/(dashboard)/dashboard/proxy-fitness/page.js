@@ -1,9 +1,34 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Badge, Button, Card, CardSkeleton, Input, ConfirmModal, Toggle } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import { useNotificationStore } from "@/store/notificationStore";
+
+function getProxyFitnessUrlState(searchParams) {
+  return {
+    providerFilter: searchParams.get("provider") || "all",
+    search: searchParams.get("q") || "",
+  };
+}
+
+function setDefaultedParam(params, key, value, defaultValue) {
+  const normalizedValue = String(value ?? "");
+  if (!normalizedValue || normalizedValue === String(defaultValue)) {
+    params.delete(key);
+    return;
+  }
+  params.set(key, normalizedValue);
+}
+
+function buildProxyFitnessUrl(pathname, searchParamsString, state) {
+  const params = new URLSearchParams(searchParamsString);
+  setDefaultedParam(params, "provider", state.providerFilter, "all");
+  setDefaultedParam(params, "q", state.search, "");
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
 
 function fmtTime(value) {
   if (!value) return "-";
@@ -59,11 +84,19 @@ function buildRecords(fitness, pools, now = Date.now()) {
 }
 
 export default function ProxyFitnessPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const searchParamsString = searchParams.toString();
+  const initialUrlState = useMemo(
+    () => getProxyFitnessUrlState(new URLSearchParams(searchParamsString)),
+    [searchParamsString],
+  );
   const [pools, setPools] = useState([]);
   const [fitness, setFitness] = useState({});
   const [loading, setLoading] = useState(true);
-  const [providerFilter, setProviderFilter] = useState("all");
-  const [search, setSearch] = useState("");
+  const [providerFilter, setProviderFilter] = useState(initialUrlState.providerFilter);
+  const [search, setSearch] = useState(initialUrlState.search);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [providerMenuDropUp, setProviderMenuDropUp] = useState(false);
   const [clearingScope, setClearingScope] = useState(null); // poolId::scope while clearing
@@ -73,6 +106,29 @@ export default function ProxyFitnessPage() {
   const [geoUpdating, setGeoUpdating] = useState(false);
   const providerMenuRef = useRef(null);
   const notify = useNotificationStore();
+
+  const replaceFitnessUrlState = useCallback(
+    (updates) => {
+      const currentState = getProxyFitnessUrlState(new URLSearchParams(searchParamsString));
+      const nextUrl = buildProxyFitnessUrl(pathname, searchParamsString, {
+        ...currentState,
+        ...updates,
+      });
+      const currentUrl = searchParamsString
+        ? `${pathname}?${searchParamsString}`
+        : pathname;
+      if (nextUrl === currentUrl) return;
+      router.replace(nextUrl, { scroll: false });
+    },
+    [pathname, router, searchParamsString],
+  );
+
+  useEffect(() => {
+    setProviderFilter((prev) =>
+      prev === initialUrlState.providerFilter ? prev : initialUrlState.providerFilter,
+    );
+    setSearch((prev) => (prev === initialUrlState.search ? prev : initialUrlState.search));
+  }, [initialUrlState.providerFilter, initialUrlState.search]);
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -291,7 +347,7 @@ export default function ProxyFitnessPage() {
                 <div className={`absolute left-0 z-20 w-full max-h-72 overflow-y-auto rounded-lg border border-border-subtle bg-surface p-1 shadow-lg ${providerMenuDropUp ? "bottom-full mb-1" : "top-full mt-1"}`}>
                   <button
                     type="button"
-                    onClick={() => { setProviderFilter("all"); setProviderMenuOpen(false); }}
+                    onClick={() => { setProviderFilter("all"); setProviderMenuOpen(false); replaceFitnessUrlState({ providerFilter: "all" }); }}
                     className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors ${providerFilter === "all" ? "bg-primary/10 text-primary" : "text-text-main hover:bg-black/5 dark:hover:bg-white/10"}`}
                   >
                     <span className="material-symbols-outlined text-[22px]">apps</span>
@@ -303,7 +359,7 @@ export default function ProxyFitnessPage() {
                     <button
                       key={provider}
                       type="button"
-                      onClick={() => { setProviderFilter(provider); setProviderMenuOpen(false); }}
+                      onClick={() => { setProviderFilter(provider); setProviderMenuOpen(false); replaceFitnessUrlState({ providerFilter: provider }); }}
                       className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors ${providerFilter === provider ? "bg-primary/10 text-primary" : "text-text-main hover:bg-black/5 dark:hover:bg-white/10"}`}
                     >
                       <ProviderIcon providerId={provider} size={24} className="size-6 rounded-md object-contain" fallbackText={provider.slice(0, 2).toUpperCase()} />
@@ -319,7 +375,11 @@ export default function ProxyFitnessPage() {
               <label className="mb-1 text-xs font-medium text-text-muted">IP / Proxy / Pool</label>
               <Input
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => {
+                  const nextValue = e.target.value;
+                  setSearch(nextValue);
+                  replaceFitnessUrlState({ search: nextValue });
+                }}
                 placeholder="e.g. 104.28, vercel-relay…"
                 icon="search"
               />
