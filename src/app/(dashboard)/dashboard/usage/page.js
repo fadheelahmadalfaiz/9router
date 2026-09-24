@@ -1,7 +1,7 @@
 "use client";
 
-import { Suspense, useState } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { UsageStats, RequestLogger, CardSkeleton, SegmentedControl } from "@/shared/components";
 import RequestDetailsTab from "./components/RequestDetailsTab";
 
@@ -13,6 +13,31 @@ const PERIODS = [
   { value: "60d", label: "60D" },
 ];
 
+const PERIOD_VALUES = new Set(PERIODS.map((option) => option.value));
+
+function getUsagePeriodUrlState(searchParams) {
+  const periodParam = searchParams.get("period") || "today";
+  return {
+    period: PERIOD_VALUES.has(periodParam) ? periodParam : "today",
+  };
+}
+
+function setDefaultedParam(params, key, value, defaultValue) {
+  const normalizedValue = String(value ?? "");
+  if (!normalizedValue || normalizedValue === String(defaultValue)) {
+    params.delete(key);
+    return;
+  }
+  params.set(key, normalizedValue);
+}
+
+function buildUsagePeriodUrl(pathname, searchParamsString, state) {
+  const params = new URLSearchParams(searchParamsString);
+  setDefaultedParam(params, "period", state.period, "today");
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
+
 export default function UsagePage() {
   return (
     <Suspense fallback={<CardSkeleton />}>
@@ -22,15 +47,43 @@ export default function UsagePage() {
 }
 
 function UsageContent() {
-  const searchParams = useSearchParams();
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const searchParamsString = searchParams.toString();
+  const initialUrlState = useMemo(
+    () => getUsagePeriodUrlState(new URLSearchParams(searchParamsString)),
+    [searchParamsString],
+  );
 
-  const [period, setPeriod] = useState("today");
+  const [period, setPeriod] = useState(initialUrlState.period);
 
   const tabFromUrl = searchParams.get("tab");
   const activeTab = tabFromUrl && ["overview", "logs", "details"].includes(tabFromUrl)
     ? tabFromUrl
     : "overview";
+
+  const replaceUsagePeriodUrlState = (updates) => {
+    const currentState = getUsagePeriodUrlState(new URLSearchParams(searchParamsString));
+    const nextUrl = buildUsagePeriodUrl(pathname, searchParamsString, {
+      ...currentState,
+      ...updates,
+    });
+    const currentUrl = searchParamsString
+      ? `${pathname}?${searchParamsString}`
+      : pathname;
+    if (nextUrl === currentUrl) return;
+    router.replace(nextUrl, { scroll: false });
+  };
+
+  const handlePeriodChange = (value) => {
+    setPeriod(value);
+    replaceUsagePeriodUrlState({ period: value });
+  };
+
+  useEffect(() => {
+    setPeriod((prev) => (prev === initialUrlState.period ? prev : initialUrlState.period));
+  }, [initialUrlState.period]);
 
   const handleTabChange = (value) => {
     if (value === activeTab) return;
@@ -56,7 +109,7 @@ function UsageContent() {
           <SegmentedControl
             options={PERIODS}
             value={period}
-            onChange={setPeriod}
+            onChange={handlePeriodChange}
             size="sm"
             className="w-full sm:w-auto"
           />
@@ -65,7 +118,7 @@ function UsageContent() {
 
       {activeTab === "overview" && (
         <Suspense fallback={<CardSkeleton />}>
-          <UsageStats period={period} setPeriod={setPeriod} hidePeriodSelector />
+          <UsageStats period={period} setPeriod={handlePeriodChange} hidePeriodSelector />
         </Suspense>
       )}
       {activeTab === "logs" && <RequestLogger />}
