@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   AreaChart,
   Area,
@@ -11,6 +12,26 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { Card, Button } from "@/shared/components";
+
+const WINDOW_TAB_VALUES = new Set(WINDOW_TABS.map((tab) => tab.id));
+
+function getPxpipeUrlState(searchParams) {
+  const windowParam = searchParams.get("window") || "last7d";
+  return {
+    windowId: WINDOW_TAB_VALUES.has(windowParam) ? windowParam : "last7d",
+  };
+}
+
+function buildPxpipeUrl(pathname, searchParamsString, state) {
+  const params = new URLSearchParams(searchParamsString);
+  if (state.windowId && state.windowId !== "last7d") {
+    params.set("window", state.windowId);
+  } else {
+    params.delete("window");
+  }
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
 
 const fmtTokens = (n) => {
   if (n >= 1000000) return `${(n / 1000000).toFixed(2)}M`;
@@ -59,12 +80,50 @@ function SummaryCard({ label, value, sub, tone }) {
 }
 
 export default function PxpipeClient() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const searchParamsString = searchParams.toString();
+  const initialUrlState = useMemo(
+    () => getPxpipeUrlState(new URLSearchParams(searchParamsString)),
+    [searchParamsString],
+  );
   const [status, setStatus] = useState(null);
   const [health, setHealth] = useState(null);
   const [stats, setStats] = useState(null);
   const [logs, setLogs] = useState(null);
-  const [windowId, setWindowId] = useState("last7d");
+  const [windowId, setWindowId] = useState(initialUrlState.windowId);
   const [loading, setLoading] = useState(true);
+
+  const replacePxpipeWindowUrlState = useCallback(
+    (updates) => {
+      const currentState = getPxpipeUrlState(new URLSearchParams(searchParamsString));
+      const nextUrl = buildPxpipeUrl(pathname, searchParamsString, {
+        ...currentState,
+        ...updates,
+      });
+      const currentUrl = searchParamsString
+        ? `${pathname}?${searchParamsString}`
+        : pathname;
+      if (nextUrl === currentUrl) return;
+      router.replace(nextUrl, { scroll: false });
+    },
+    [pathname, router, searchParamsString],
+  );
+
+  const handleWindowChange = useCallback(
+    (nextWindowId) => {
+      setWindowId(nextWindowId);
+      replacePxpipeWindowUrlState({ windowId: nextWindowId });
+    },
+    [replacePxpipeWindowUrlState],
+  );
+
+  useEffect(() => {
+    setWindowId((prev) =>
+      prev === initialUrlState.windowId ? prev : initialUrlState.windowId,
+    );
+  }, [initialUrlState.windowId]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -139,7 +198,7 @@ export default function PxpipeClient() {
             {WINDOW_TABS.map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => setWindowId(tab.id)}
+                onClick={() => handleWindowChange(tab.id)}
                 className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
                   windowId === tab.id
                     ? "bg-primary text-white shadow-sm"
