@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { Suspense, useState, useEffect, useMemo, useCallback } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import PropTypes from "prop-types";
 import {
@@ -118,7 +118,7 @@ function buildProvidersUrl(pathname, searchParamsString, state) {
   return query ? `${pathname}?${query}` : pathname;
 }
 
-export default function ProvidersPage() {
+function ProvidersPageInner() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -1217,3 +1217,14 @@ ProviderTestResultsView.propTypes = {
     error: PropTypes.string,
   }).isRequired,
 };
+
+// Wrap the client component that calls useSearchParams() in a Suspense
+// boundary so Next.js can prerender the route without bailing out
+// (https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout).
+export default function ProvidersPage() {
+  return (
+    <Suspense fallback={<CardSkeleton />}>
+      <ProvidersPageInner />
+    </Suspense>
+  );
+}

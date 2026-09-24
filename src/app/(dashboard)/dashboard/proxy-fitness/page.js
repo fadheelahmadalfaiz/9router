@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Badge, Button, Card, CardSkeleton, Input, ConfirmModal, Toggle } from "@/shared/components";
 import ProviderIcon from "@/shared/components/ProviderIcon";
@@ -83,7 +83,7 @@ function buildRecords(fitness, pools, now = Date.now()) {
   return records;
 }
 
-export default function ProxyFitnessPage() {
+function ProxyFitnessPageInner() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -480,5 +480,16 @@ export default function ProxyFitnessPage() {
         variant="danger"
       />
     </div>
+  );
+}
+
+// Wrap the client component that calls useSearchParams() in a Suspense
+// boundary so Next.js can prerender the route without bailing out
+// (https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout).
+export default function ProxyFitnessPage() {
+  return (
+    <Suspense fallback={<CardSkeleton />}>
+      <ProxyFitnessPageInner />
+    </Suspense>
   );
 }
