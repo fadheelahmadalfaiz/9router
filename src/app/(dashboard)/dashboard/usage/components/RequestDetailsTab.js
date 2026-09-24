@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Card from "@/shared/components/Card";
 import Button from "@/shared/components/Button";
 import Drawer from "@/shared/components/Drawer";
@@ -90,6 +91,61 @@ function getCacheCreationTokens(tokens) {
   return tokens?.cache_creation_input_tokens || 0;
 }
 
+const DEFAULT_PAGE_SIZE = 20;
+const DETAILS_PAGE_SIZE_MAX = 200;
+
+function getBoundedDetailsPageSize(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(DETAILS_PAGE_SIZE_MAX, Math.max(1, parsed));
+}
+
+function getPositivePage(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, parsed);
+}
+
+function getRequestDetailsUrlState(searchParams, fallbackPageSize) {
+  return {
+    provider: searchParams.get("provider") || "",
+    startDate: searchParams.get("startDate") || "",
+    endDate: searchParams.get("endDate") || "",
+    page: getPositivePage(searchParams.get("page"), 1),
+    pageSize: getBoundedDetailsPageSize(
+      searchParams.get("pageSize"),
+      fallbackPageSize,
+    ),
+  };
+}
+
+function setDefaultedParam(params, key, value, defaultValue) {
+  const normalizedValue = String(value ?? "");
+  if (!normalizedValue || normalizedValue === String(defaultValue)) {
+    params.delete(key);
+    return;
+  }
+  params.set(key, normalizedValue);
+}
+
+function buildRequestDetailsUrl(pathname, searchParamsString, state, pageSize) {
+  const params = new URLSearchParams(searchParamsString);
+
+  setDefaultedParam(params, "provider", state.provider, "");
+  setDefaultedParam(params, "startDate", state.startDate, "");
+  setDefaultedParam(params, "endDate", state.endDate, "");
+  setDefaultedParam(params, "page", getPositivePage(state.page, 1), 1);
+  setDefaultedParam(
+    params,
+    "pageSize",
+    getBoundedDetailsPageSize(state.pageSize, pageSize),
+    DEFAULT_PAGE_SIZE,
+  );
+
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
+
 function getInputTokens(tokens) {
   const prompt = tokens?.prompt_tokens || tokens?.input_tokens || 0;
   // Canonical storage keeps prompt cache-inclusive. Legacy Claude rows may have
@@ -100,12 +156,20 @@ function getInputTokens(tokens) {
 }
 
 export default function RequestDetailsTab() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const searchParamsString = searchParams.toString();
+  const initialUrlState = useMemo(
+    () => getRequestDetailsUrlState(new URLSearchParams(searchParamsString), DEFAULT_PAGE_SIZE),
+    [searchParamsString],
+  );
   const [details, setDetails] = useState([]);
   const [pagination, setPagination] = useState({
-    page: 1,
-    pageSize: 20,
+    page: initialUrlState.page,
+    pageSize: initialUrlState.pageSize,
     totalItems: 0,
-    totalPages: 0
+    totalPages: 0,
   });
   const [loading, setLoading] = useState(false);
   const [selectedDetail, setSelectedDetail] = useState(null);
@@ -113,10 +177,74 @@ export default function RequestDetailsTab() {
   const [providers, setProviders] = useState([]);
   const [providerNameCache, setProviderNameCache] = useState(null);
   const [filters, setFilters] = useState({
-    provider: "",
-    startDate: "",
-    endDate: ""
+    provider: initialUrlState.provider,
+    startDate: initialUrlState.startDate,
+    endDate: initialUrlState.endDate,
   });
+
+  const buildDetailsUrl = useCallback(
+    (updates) => {
+      const currentState = getRequestDetailsUrlState(
+        new URLSearchParams(searchParamsString),
+        initialUrlState.pageSize,
+      );
+      return buildRequestDetailsUrl(
+        pathname,
+        searchParamsString,
+        { ...currentState, ...updates },
+        initialUrlState.pageSize,
+      );
+    },
+    [pathname, searchParamsString, initialUrlState.pageSize],
+  );
+
+  const replaceDetailsUrlState = useCallback(
+    (updates) => {
+      const nextUrl = buildDetailsUrl(updates);
+      const currentUrl = searchParamsString
+        ? `${pathname}?${searchParamsString}`
+        : pathname;
+      if (nextUrl === currentUrl) return;
+      router.replace(nextUrl, { scroll: false });
+    },
+    [buildDetailsUrl, pathname, router, searchParamsString],
+  );
+
+  useEffect(() => {
+    setFilters((prev) => {
+      if (
+        prev.provider === initialUrlState.provider &&
+        prev.startDate === initialUrlState.startDate &&
+        prev.endDate === initialUrlState.endDate
+      ) {
+        return prev;
+      }
+      return {
+        provider: initialUrlState.provider,
+        startDate: initialUrlState.startDate,
+        endDate: initialUrlState.endDate,
+      };
+    });
+    setPagination((prev) => {
+      if (
+        prev.page === initialUrlState.page &&
+        prev.pageSize === initialUrlState.pageSize
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        page: initialUrlState.page,
+        pageSize: initialUrlState.pageSize,
+      };
+    });
+  }, [
+    initialUrlState.endDate,
+    initialUrlState.page,
+    initialUrlState.pageSize,
+    initialUrlState.provider,
+    initialUrlState.startDate,
+  ]);
 
   const fetchProviders = useCallback(async () => {
     try {
@@ -136,7 +264,7 @@ export default function RequestDetailsTab() {
     try {
       const params = new URLSearchParams({
         page: pagination.page.toString(),
-        pageSize: pagination.pageSize.toString()
+        pageSize: pagination.pageSize.toString(),
       });
       if (filters.provider) params.append("provider", filters.provider);
       if (filters.startDate) params.append("startDate", filters.startDate);
@@ -146,7 +274,7 @@ export default function RequestDetailsTab() {
       const data = await res.json();
 
       setDetails(data.details || []);
-      setPagination(prev => ({ ...prev, ...data.pagination }));
+      setPagination((prev) => ({ ...prev, ...data.pagination }));
     } catch (error) {
       console.error("Failed to fetch request details:", error);
     } finally {
@@ -168,15 +296,44 @@ export default function RequestDetailsTab() {
   };
 
   const handlePageChange = (newPage) => {
-    setPagination(prev => ({ ...prev, page: newPage }));
+    const safePage = getPositivePage(newPage, 1);
+    setPagination((prev) => ({ ...prev, page: safePage }));
+    replaceDetailsUrlState({ page: safePage });
   };
 
   const handlePageSizeChange = (newPageSize) => {
-    setPagination(prev => ({ ...prev, pageSize: newPageSize, page: 1 }));
+    const safePageSize = getBoundedDetailsPageSize(
+      newPageSize,
+      initialUrlState.pageSize,
+    );
+    setPagination((prev) => ({ ...prev, pageSize: safePageSize, page: 1 }));
+    replaceDetailsUrlState({ page: 1, pageSize: safePageSize });
   };
 
+  const handleFilterChange = useCallback(
+    (key, value) => {
+      setFilters((prev) => {
+        const next = { ...prev, [key]: value };
+        replaceDetailsUrlState({
+          ...next,
+          page: 1,
+        });
+        return next;
+      });
+    },
+    [replaceDetailsUrlState],
+  );
+
   const handleClearFilters = () => {
-    setFilters({ provider: "", startDate: "", endDate: "" });
+    const cleared = { provider: "", startDate: "", endDate: "" };
+    setFilters(cleared);
+    setPagination((prev) => ({ ...prev, page: 1 }));
+    replaceDetailsUrlState({
+      provider: "",
+      startDate: "",
+      endDate: "",
+      page: 1,
+    });
   };
 
   return (
@@ -188,7 +345,7 @@ export default function RequestDetailsTab() {
             <select
               id="provider-filter"
               value={filters.provider}
-              onChange={(e) => setFilters({ ...filters, provider: e.target.value })}
+              onChange={(e) => handleFilterChange("provider", e.target.value)}
               className={cn(
                 "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
                 "text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20",
@@ -211,7 +368,7 @@ export default function RequestDetailsTab() {
               id="start-date-filter"
               type="datetime-local"
               value={filters.startDate}
-              onChange={(e) => setFilters({ ...filters, startDate: e.target.value })}
+              onChange={(e) => handleFilterChange("startDate", e.target.value)}
               className={cn(
                 "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
                 "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
@@ -225,7 +382,7 @@ export default function RequestDetailsTab() {
               id="end-date-filter"
               type="datetime-local"
               value={filters.endDate}
-              onChange={(e) => setFilters({ ...filters, endDate: e.target.value })}
+              onChange={(e) => handleFilterChange("endDate", e.target.value)}
               className={cn(
                 "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
                 "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
