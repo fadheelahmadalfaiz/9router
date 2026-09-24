@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import QuotaTable from "./QuotaTable";
 import Toggle from "@/shared/components/Toggle";
@@ -68,6 +69,64 @@ const AUTO_PING_TOOLTIPS = {
   codex: "Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request. Consumes a small amount of quota.",
 };
 
+const ACCOUNT_FILTER_VALUES = new Set(ACCOUNT_FILTER_OPTIONS.map((option) => option.value));
+const QUOTA_SORT_VALUES = new Set(QUOTA_SORT_OPTIONS.map((option) => option.value));
+
+function getBoundedPageSize(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return CONNECTIONS_PAGE_SIZE;
+  return Math.min(ACCOUNT_PAGE_SIZE_MAX, Math.max(1, parsed));
+}
+
+function getPositivePage(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(1, parsed);
+}
+
+function getQuotaUrlState(searchParams) {
+  const providerFilter = searchParams.get("provider")?.trim() || "all";
+  const accountParam = searchParams.get("account") || "all";
+  const accountFilter = ACCOUNT_FILTER_VALUES.has(accountParam) ? accountParam : "all";
+  const sortParam = searchParams.get("sort") || "default";
+  const quotaSortMode = providerFilter === "codex" && QUOTA_SORT_VALUES.has(sortParam)
+    ? sortParam
+    : "default";
+
+  return {
+    providerFilter,
+    accountFilter,
+    quotaSortMode,
+    expiringFirst: searchParams.get("expiring") === "1",
+    page: getPositivePage(searchParams.get("page")),
+    pageSize: getBoundedPageSize(searchParams.get("pageSize")),
+  };
+}
+
+function setDefaultedParam(params, key, value, defaultValue) {
+  const normalizedValue = String(value);
+  if (!normalizedValue || normalizedValue === String(defaultValue)) {
+    params.delete(key);
+    return;
+  }
+  params.set(key, normalizedValue);
+}
+
+function getQuotaUrl(pathname, searchParamsString, state) {
+  const params = new URLSearchParams(searchParamsString);
+  const quotaSortMode = state.providerFilter === "codex" ? state.quotaSortMode : "default";
+
+  setDefaultedParam(params, "provider", state.providerFilter, "all");
+  setDefaultedParam(params, "account", state.accountFilter, "all");
+  setDefaultedParam(params, "sort", quotaSortMode, "default");
+  setDefaultedParam(params, "expiring", state.expiringFirst ? "1" : "", "");
+  setDefaultedParam(params, "page", getPositivePage(state.page), 1);
+  setDefaultedParam(params, "pageSize", getBoundedPageSize(state.pageSize), CONNECTIONS_PAGE_SIZE);
+
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
+
 function kiroMethodLabel(conn) {
   const m = conn.providerSpecificData?.authMethod;
   if (m && KIRO_METHOD_LABELS[m]) return KIRO_METHOD_LABELS[m];
@@ -128,6 +187,14 @@ function formatTimeRemaining(value) {
 }
 
 export default function ProviderLimits() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const searchParamsString = searchParams.toString();
+  const initialUrlState = useMemo(
+    () => getQuotaUrlState(new URLSearchParams(searchParamsString)),
+    [searchParamsString],
+  );
   const { copied, copy } = useCopyToClipboard();
   const notify = useNotificationStore();
   const [connections, setConnections] = useState([]);
@@ -150,18 +217,18 @@ export default function ProviderLimits() {
   const [selectedConnection, setSelectedConnection] = useState(null);
   const [revealTarget, setRevealTarget] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
-  const [providerFilter, setProviderFilter] = useState("all");
+  const [providerFilter, setProviderFilter] = useState(initialUrlState.providerFilter);
   const [providerOptions, setProviderOptions] = useState([]);
-  const [accountFilter, setAccountFilter] = useState("all");
-  const [quotaSortMode, setQuotaSortMode] = useState("default");
+  const [accountFilter, setAccountFilter] = useState(initialUrlState.accountFilter);
+  const [quotaSortMode, setQuotaSortMode] = useState(initialUrlState.quotaSortMode);
   const [quotaVisibility, setQuotaVisibility] = useState({});
-  const [expiringFirst, setExpiringFirst] = useState(false);
+  const [expiringFirst, setExpiringFirst] = useState(initialUrlState.expiringFirst);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [bulkToggling, setBulkToggling] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(CONNECTIONS_PAGE_SIZE);
+  const [page, setPage] = useState(initialUrlState.page);
+  const [pageSize, setPageSize] = useState(initialUrlState.pageSize);
   const [customPageSizeInput, setCustomPageSizeInput] = useState(
-    String(CONNECTIONS_PAGE_SIZE),
+    String(initialUrlState.pageSize),
   );
   const [pagination, setPagination] = useState({
     page: 1,
@@ -177,6 +244,103 @@ export default function ProviderLimits() {
   const intervalRef = useRef(null);
   const countdownRef = useRef(null);
   const tickCountRef = useRef(0);
+
+  const replaceQuotaUrlState = useCallback(
+    (updates) => {
+      const currentState = getQuotaUrlState(new URLSearchParams(searchParamsString));
+      const nextUrl = getQuotaUrl(pathname, searchParamsString, {
+        ...currentState,
+        ...updates,
+      });
+      const currentUrl = searchParamsString ? `${pathname}?${searchParamsString}` : pathname;
+      if (nextUrl === currentUrl) return;
+      router.replace(nextUrl, { scroll: false });
+    },
+    [pathname, router, searchParamsString],
+  );
+
+  useEffect(() => {
+    setProviderFilter(initialUrlState.providerFilter);
+    setAccountFilter(initialUrlState.accountFilter);
+    setQuotaSortMode(initialUrlState.quotaSortMode);
+    setExpiringFirst(initialUrlState.expiringFirst);
+    setPage(initialUrlState.page);
+    setPageSize(initialUrlState.pageSize);
+    setCustomPageSizeInput(String(initialUrlState.pageSize));
+  }, [
+    initialUrlState.accountFilter,
+    initialUrlState.expiringFirst,
+    initialUrlState.page,
+    initialUrlState.pageSize,
+    initialUrlState.providerFilter,
+    initialUrlState.quotaSortMode,
+  ]);
+
+  const handleProviderFilterChange = useCallback(
+    (nextProvider) => {
+      const nextProviderFilter = nextProvider || "all";
+      const nextPage = shouldResetPage(providerFilter, nextProviderFilter) ? 1 : page;
+      if (nextPage === 1 && page !== 1) {
+        setPage(1);
+      }
+      setProviderFilter(nextProviderFilter);
+      if (nextProviderFilter !== "codex") {
+        setQuotaSortMode("default");
+      }
+      replaceQuotaUrlState({
+        providerFilter: nextProviderFilter,
+        page: nextPage,
+        quotaSortMode: nextProviderFilter === "codex" ? quotaSortMode : "default",
+      });
+    },
+    [page, providerFilter, quotaSortMode, replaceQuotaUrlState],
+  );
+
+  const handleAccountFilterChange = useCallback(
+    (nextAccountFilter) => {
+      const nextPage = shouldResetPage(accountFilter, nextAccountFilter) ? 1 : page;
+      if (nextPage === 1 && page !== 1) {
+        setPage(1);
+      }
+      setAccountFilter(nextAccountFilter);
+      replaceQuotaUrlState({ accountFilter: nextAccountFilter, page: nextPage });
+    },
+    [accountFilter, page, replaceQuotaUrlState],
+  );
+
+  const handleQuotaSortModeChange = useCallback(
+    (nextQuotaSortMode) => {
+      setQuotaSortMode(nextQuotaSortMode);
+      replaceQuotaUrlState({ quotaSortMode: nextQuotaSortMode });
+    },
+    [replaceQuotaUrlState],
+  );
+
+  const handleExpiringFirstToggle = useCallback(() => {
+    const nextExpiringFirst = !expiringFirst;
+    setExpiringFirst(nextExpiringFirst);
+    replaceQuotaUrlState({ expiringFirst: nextExpiringFirst });
+  }, [expiringFirst, replaceQuotaUrlState]);
+
+  const handlePageChange = useCallback(
+    (nextPage) => {
+      const safePage = getPositivePage(nextPage);
+      setPage(safePage);
+      replaceQuotaUrlState({ page: safePage });
+    },
+    [replaceQuotaUrlState],
+  );
+
+  const handlePageSizeChange = useCallback(
+    (nextPageSize) => {
+      const safePageSize = getBoundedPageSize(nextPageSize);
+      setPage(1);
+      setPageSize(safePageSize);
+      setCustomPageSizeInput(String(safePageSize));
+      replaceQuotaUrlState({ page: 1, pageSize: safePageSize });
+    },
+    [replaceQuotaUrlState],
+  );
 
   const fetchConnections = useCallback(
     async (targetPage = page) => {
@@ -217,7 +381,7 @@ export default function ProviderLimits() {
         return [];
       }
     },
-    [accountFilter, expiringFirst, page, pageSize, providerFilter],
+    [accountFilter, page, pageSize, providerFilter],
   );
 
   // Fetch quota for a specific connection
@@ -848,10 +1012,7 @@ export default function ProviderLimits() {
                   <button
                     type="button"
                     onClick={() => {
-                      if (shouldResetPage(providerFilter, "all")) {
-                        setPage(1);
-                      }
-                      setProviderFilter("all");
+                      handleProviderFilterChange("all");
                       setProviderMenuOpen(false);
                     }}
                     className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors ${providerFilter === "all" ? "bg-primary/10 text-primary" : "text-text-primary hover:bg-black/5 dark:hover:bg-white/10"}`}
@@ -873,10 +1034,7 @@ export default function ProviderLimits() {
                         key={provider}
                         type="button"
                         onClick={() => {
-                          if (shouldResetPage(providerFilter, provider)) {
-                            setPage(1);
-                          }
-                          setProviderFilter(provider);
+                          handleProviderFilterChange(provider);
                           setProviderMenuOpen(false);
                         }}
                         className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors ${providerFilter === provider ? "bg-primary/10 text-primary" : "text-text-primary hover:bg-black/5 dark:hover:bg-white/10"}`}
@@ -906,11 +1064,7 @@ export default function ProviderLimits() {
           <select
             value={accountFilter}
             onChange={(event) => {
-              const nextValue = event.target.value;
-              if (shouldResetPage(accountFilter, nextValue)) {
-                setPage(1);
-              }
-              setAccountFilter(nextValue);
+              handleAccountFilterChange(event.target.value);
             }}
             className="h-8 rounded-lg border border-black/10 bg-black/[0.02] px-2 text-xs text-text-primary outline-none transition-colors hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/10"
             aria-label="Filter accounts by status"
@@ -925,7 +1079,7 @@ export default function ProviderLimits() {
           {providerFilter === "codex" && (
             <select
               value={quotaSortMode}
-              onChange={(event) => setQuotaSortMode(event.target.value)}
+              onChange={(event) => handleQuotaSortModeChange(event.target.value)}
               className="h-8 rounded-lg border border-black/10 bg-black/[0.02] px-2 text-xs text-text-primary outline-none transition-colors hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/10"
               aria-label="Sort Codex quotas by remaining"
             >
@@ -939,7 +1093,7 @@ export default function ProviderLimits() {
 
           <button
             type="button"
-            onClick={() => setExpiringFirst((prev) => !prev)}
+            onClick={handleExpiringFirstToggle}
             aria-pressed={expiringFirst}
             className={`flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors ${expiringFirst ? "border-amber-500/40 bg-amber-500/10 text-amber-500" : "border-black/10 text-text-primary hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5"}`}
             title="Sort accounts by earliest quota reset time"
@@ -1331,12 +1485,7 @@ export default function ProviderLimits() {
                 onChange={(event) => {
                   const nextValue = event.target.value;
                   if (nextValue === "custom") return;
-                  const nextPageSize = Number.parseInt(nextValue, 10);
-                  if (Number.isFinite(nextPageSize)) {
-                    setPage(1);
-                    setPageSize(nextPageSize);
-                    setCustomPageSizeInput(String(nextPageSize));
-                  }
+                  handlePageSizeChange(nextValue);
                 }}
                 className="h-8 rounded-lg border border-black/10 bg-black/[0.02] px-2 text-xs text-text-primary outline-none transition-colors hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/10"
                 aria-label="Accounts per page"
@@ -1361,10 +1510,7 @@ export default function ProviderLimits() {
                     setCustomPageSizeInput(String(pageSize));
                     return;
                   }
-                  const nextPageSize = Math.min(ACCOUNT_PAGE_SIZE_MAX, Math.max(1, parsedValue));
-                  setPage(1);
-                  setPageSize(nextPageSize);
-                  setCustomPageSizeInput(String(nextPageSize));
+                  handlePageSizeChange(parsedValue);
                 }}
                 onKeyDown={(event) => {
                   if (event.key !== "Enter") return;
@@ -1373,10 +1519,7 @@ export default function ProviderLimits() {
                     setCustomPageSizeInput(String(pageSize));
                     return;
                   }
-                  const nextPageSize = Math.min(ACCOUNT_PAGE_SIZE_MAX, Math.max(1, parsedValue));
-                  setPage(1);
-                  setPageSize(nextPageSize);
-                  setCustomPageSizeInput(String(nextPageSize));
+                  handlePageSizeChange(parsedValue);
                 }}
                 className="h-8 w-20 rounded-lg border border-black/10 bg-black/[0.02] px-2 text-xs text-text-primary outline-none transition-colors hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/10"
                 aria-label="Custom accounts per page"
@@ -1387,7 +1530,7 @@ export default function ProviderLimits() {
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                onClick={() => setPage(1)}
+                onClick={() => handlePageChange(1)}
                 disabled={
                   pagination.page <= 1 || connectionsLoading || refreshingAll
                 }
@@ -1397,9 +1540,7 @@ export default function ProviderLimits() {
               </button>
               <button
                 type="button"
-                onClick={() =>
-                  setPage((currentPage) => Math.max(1, currentPage - 1))
-                }
+                onClick={() => handlePageChange(Math.max(1, pagination.page - 1))}
                 disabled={
                   pagination.page <= 1 || connectionsLoading || refreshingAll
                 }
@@ -1412,11 +1553,7 @@ export default function ProviderLimits() {
               </button>
               <button
                 type="button"
-                onClick={() =>
-                  setPage((currentPage) =>
-                    Math.min(pagination.totalPages, currentPage + 1),
-                  )
-                }
+                onClick={() => handlePageChange(Math.min(pagination.totalPages, pagination.page + 1))}
                 disabled={
                   pagination.page >= pagination.totalPages ||
                   connectionsLoading ||
@@ -1431,7 +1568,7 @@ export default function ProviderLimits() {
               </button>
               <button
                 type="button"
-                onClick={() => setPage(pagination.totalPages)}
+                onClick={() => handlePageChange(pagination.totalPages)}
                 disabled={
                   pagination.page >= pagination.totalPages ||
                   connectionsLoading ||
