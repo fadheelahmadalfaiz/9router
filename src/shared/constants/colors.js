@@ -1,4 +1,4 @@
-// 9Router color palette
+// IzRouter color palette
 // Light theme: warm neutral surfaces with citron primary
 // Dark theme: deep neutral surfaces with violet secondary accent
 

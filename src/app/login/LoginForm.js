@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { Card, Button, Input } from "@/shared/components";
-import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import TroubleSigningInModal from "./TroubleSigningInModal";
 
 // Returns a safe internal redirect target from ?redirect= or the default.
 // Rejects protocol-relative URLs (//evil.com), absolute URLs (https://evil.com),
@@ -17,8 +17,6 @@ function safeRedirectTarget(raw) {
   if (!raw.startsWith("/dashboard")) return DEFAULT_LOGIN_REDIRECT;
   return raw;
 }
-
-const RESET_CLI_COMMAND = "9router settings reset-password";
 
 const STRENGTH_LABELS = ["", "Weak", "Weak", "Fair", "Good", "Strong"];
 const STRENGTH_BAR_CLASSES = [
@@ -47,10 +45,9 @@ export default function LoginForm() {
   const searchParams = useSearchParams();
   const postLoginRedirect = safeRedirectTarget(searchParams.get("redirect"));
 
-  const { copied, copy } = useCopyToClipboard();
-
   const [password, setPassword] = useState("");
   const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showTroubleModal, setShowTroubleModal] = useState(false);
   const [error, setError] = useState("");
   const [resetHint, setResetHint] = useState("");
   const [retryAfter, setRetryAfter] = useState(0);
@@ -225,7 +222,7 @@ export default function LoginForm() {
       <div className="landing-grid absolute inset-0 pointer-events-none" aria-hidden="true" />
       <div className="relative z-10 w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-primary mb-2">9Router</h1>
+          <h1 className="text-3xl font-bold text-primary mb-2">IzRouter</h1>
           <p className="text-text-muted">
             {samlAvailable
               ? "Sign in with SAML 2.0 Single Sign-On"
@@ -420,27 +417,14 @@ export default function LoginForm() {
                     {retryAfter > 0 ? `Wait ${retryAfter}s` : "Login"}
                   </Button>
 
-                  <div className="mt-1 flex flex-col gap-1.5 rounded-md border border-border/60 bg-sidebar/40 px-3 py-2 text-[11px] text-text-muted">
-                    <div className="flex items-center justify-between gap-2">
-                      <span>Trouble signing in?</span>
-                      <button
-                        type="button"
-                        onClick={() => copy(RESET_CLI_COMMAND, "login-cli-cmd")}
-                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-text-muted hover:bg-sidebar hover:text-text-primary transition-colors"
-                        aria-label="Copy reset command"
-                      >
-                        <span className="material-symbols-outlined text-[13px]">
-                          {copied === "login-cli-cmd" ? "check" : "content_copy"}
-                        </span>
-                        <span>Copy reset command</span>
-                      </button>
-                    </div>
-                    <code className="block break-all bg-background/50 px-1.5 py-1 rounded font-mono text-[10px]">
-                      {RESET_CLI_COMMAND}
-                    </code>
-                    <span className="opacity-80">
-                      Run on the host. Requires CLI access to the 9router process.
-                    </span>
+                  <div className="mt-1 text-center">
+                    <button
+                      type="button"
+                      onClick={() => setShowTroubleModal(true)}
+                      className="text-xs text-text-muted underline-offset-2 transition-colors hover:text-primary hover:underline"
+                    >
+                      Trouble signing in?
+                    </button>
                   </div>
 
                   {hasPassword === false && (
@@ -456,6 +440,11 @@ export default function LoginForm() {
           )}
         </Card>
       </div>
+
+      <TroubleSigningInModal
+        isOpen={showTroubleModal}
+        onClose={() => setShowTroubleModal(false)}
+      />
     </div>
   );
 }
