@@ -13,6 +13,14 @@ import {
 } from "recharts";
 import { Card, Button } from "@/shared/components";
 
+const WINDOW_TABS = [
+  { id: "today", label: "Today" },
+  { id: "yesterday", label: "Yesterday" },
+  { id: "last7d", label: "7 days" },
+  { id: "last30d", label: "30 days" },
+  { id: "all", label: "All time" },
+];
+
 const WINDOW_TAB_VALUES = new Set(WINDOW_TABS.map((tab) => tab.id));
 
 function getPxpipeUrlState(searchParams) {
@@ -45,14 +53,6 @@ const fmtUptime = (ms) => {
   const h = Math.floor(m / 60);
   return h > 0 ? `${h}h${String(m % 60).padStart(2, "0")}m` : `${m}m`;
 };
-
-const WINDOW_TABS = [
-  { id: "today", label: "Today" },
-  { id: "yesterday", label: "Yesterday" },
-  { id: "last7d", label: "7 days" },
-  { id: "last30d", label: "30 days" },
-  { id: "all", label: "All time" },
-];
 
 const REASON_LABELS = {
   applied: "Prompt exceeded threshold",
