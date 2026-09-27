@@ -9,6 +9,49 @@ import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 // Browser OAuth: popup → auto callback → auto exchange → poll-status.
 const PROXY_OAUTH_PROVIDERS = new Set(["trae", "windsurf", "zed"]);
 
+// Device code flow providers (must match oauth providers with flowType: "device_code")
+const DEVICE_CODE_PROVIDERS = [
+  "github",
+  "kiro",
+  "kimi",
+  "kimi-coding",
+  "kilocode",
+  "codebuddy-cn",
+  "codebuddy-intl",
+  "qoder",
+  "qoder-cn",
+  "grok-cli",
+  "freebuff",
+];
+
+const oauthProxyPoolStorageKey = (providerId) => `9router.oauthProxyPool.${providerId}`;
+const oauthProxyPoolChosenKey = (providerId) => `9router.oauthProxyPool.${providerId}.chosen`;
+
+// Egress picker for device-code OAuth: direct (default) or one of the
+// configured proxy pools. Needed when the server's own egress is IP-limited
+// (Docker) while local works — the choice is sent as `proxy_pool` to
+// device-code and as `proxyPoolId` to poll.
+function OAuthProxyPoolSelect({ pools, value, onChange }) {
+  if (!Array.isArray(pools) || pools.length === 0) return null;
+  return (
+    <label className="flex items-center gap-2 text-xs text-text-muted">
+      <span className="shrink-0">Request via</span>
+      <select
+        value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2 py-1.5 text-xs text-text-main outline-none focus:border-primary"
+      >
+        <option value="">Direct (no proxy)</option>
+        {pools.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name || p.id} ({p.type || "http"})
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 // Providers offering a paste-token fallback (import-token flow).
 // UX warns if the IDE (which issues the token) is not installed.
 const PASTE_TOKEN_PROVIDERS = {
@@ -43,6 +86,28 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [isDeviceCode, setIsDeviceCode] = useState(false);
   const [deviceData, setDeviceData] = useState(null);
   const [polling, setPolling] = useState(false);
+  // Latest transient poll-transport failure (flaky pool egress). Shown as a
+  // non-fatal hint while polling continues; becomes the error on deadline.
+  const [pollWarning, setPollWarning] = useState(null);
+  // Optional proxy pool for the OAuth request itself (server egress may be
+  // IP-limited while local works). Persisted per provider so a working
+  // choice survives across attempts. Only sent for device-code flows.
+  const [oauthProxyPoolId, setOauthProxyPoolId] = useState("");
+  const [proxyPools, setProxyPools] = useState([]);
+  const oauthProxyPoolRef = useRef("");
+  const selectOauthProxyPool = useCallback((poolId) => {
+    const next = poolId || "";
+    oauthProxyPoolRef.current = next;
+    setOauthProxyPoolId(next);
+    try {
+      if (typeof window !== "undefined" && provider) {
+        if (next) window.localStorage.setItem(oauthProxyPoolStorageKey(provider), next);
+        else window.localStorage.removeItem(oauthProxyPoolStorageKey(provider));
+        // Any explicit pick (including back-to-Direct) counts as chosen.
+        window.localStorage.setItem(oauthProxyPoolChosenKey(provider), "1");
+      }
+    } catch { /* private mode — selection just won't persist */ }
+  }, [provider]);
   // trae/windsurf: choose between browser OAuth (proxy) and paste-token (import)
   const [authMode, setAuthMode] = useState("browser"); // "browser" | "paste-token"
   const [pasteToken, setPasteToken] = useState("");
@@ -50,6 +115,19 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const popupRef = useRef(null);
   const pollingAbortRef = useRef(false);
   const openedRef = useRef(false);
+  // Proxy-flow session ledger: which provider's proxy THIS modal session
+  // started, and whether its stop was already sent. Every stop-proxy call is
+  // gated on this — parent re-renders can never spam it, and a close stops
+  // the owned proxy exactly once.
+  const flowRef = useRef({ proxyStarted: false, proxyProvider: null, stopSent: false });
+  // Parent callbacks are stored in refs so effect/callback identities stay
+  // stable across parent re-renders (the page passes fresh inline closures).
+  // Synced by the ref-sync effect below (placed after all callbacks are
+  // defined); the open effect then depends only on stable primitives.
+  const onSuccessRef = useRef(onSuccess);
+  const onCloseRef = useRef(onClose);
+  const isOpenRef = useRef(isOpen);
+  const startOAuthFlowRef = useRef(null);
   const { copied, copy } = useCopyToClipboard();
 
   // State for client-only values to avoid hydration mismatch
@@ -81,20 +159,23 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           redirectUri: authData.redirectUri,
           codeVerifier: authData.codeVerifier,
           state,
+          // Zed: thread the login attempt's system_id so the stored
+          // connection keeps the id sent to zed.dev (see register-session).
+          ...(authData.systemId ? { systemId: authData.systemId } : {}),
           ...(oauthMeta ? { meta: oauthMeta } : {}),
         }),
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      if (!res.ok) throw new Error([data.error, data.errorCause].filter(Boolean).join(" | "));
 
       setStep("success");
-      onSuccess?.();
+      onSuccessRef.current?.();
     } catch (err) {
       setError(err.message);
       setStep("error");
     }
-  }, [authData, provider, onSuccess, oauthMeta]);
+  }, [authData, provider, oauthMeta]);
 
   const completeXaiManualCode = useCallback(async (code) => {
     if (!authData?.state) return;
@@ -105,25 +186,30 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         body: JSON.stringify({ code, state: authData.state }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      if (!res.ok) throw new Error([data.error, data.errorCause].filter(Boolean).join(" | "));
 
       setStep("success");
-      onSuccess?.();
+      onSuccessRef.current?.();
     } catch (err) {
       setError(err.message);
       setStep("error");
     }
-  }, [authData, onSuccess]);
+  }, [authData]);
 
   // Poll for device code token
   const startPolling = useCallback(async (deviceCode, codeVerifier, interval, extraData, deadlineMs) => {
     pollingAbortRef.current = false;
     setPolling(true);
+    setPollWarning(null);
     // Honor the upstream's expires_in when supplied (qoder sets 300s) so we
     // don't time out earlier than the device code itself. Default 120s
     // matches the prior behavior for providers that don't surface a value.
     const startedAt = Date.now();
     const deadline = startedAt + (Number.isFinite(deadlineMs) && deadlineMs > 0 ? deadlineMs : 120_000);
+    // Transport failures (flaky pool egress, 5xx) are transient: remember the
+    // latest and keep polling until the deadline instead of killing the whole
+    // flow on one bad tick. 4xx = bad request, retrying can't help → fatal.
+    let lastTransportError = null;
 
     while (Date.now() < deadline) {
       // Check if polling should be aborted
@@ -146,40 +232,80 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         const res = await fetch(`/api/oauth/${provider}/poll`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ deviceCode, codeVerifier, extraData }),
+          // proxyPoolId keeps polling on the same egress the device-code
+          // request used (Docker egress may be IP-limited).
+          body: JSON.stringify({
+            deviceCode,
+            codeVerifier,
+            extraData,
+            ...(oauthProxyPoolRef.current ? { proxyPoolId: oauthProxyPoolRef.current } : {}),
+          }),
         });
 
         const data = await res.json();
+        if (!res.ok) {
+          const transportError = [data.error, data.errorCause].filter(Boolean).join(" | ") || `Poll failed: ${res.status}`;
+          if (res.status >= 500) {
+            // Transient (flaky pool egress / upstream hiccup) — keep polling,
+            // surface the latest failure if the deadline hits.
+            lastTransportError = transportError;
+            setPollWarning(transportError);
+            continue;
+          }
+          throw new Error(transportError);
+        }
+        lastTransportError = null;
+        setPollWarning(null);
 
         if (data.success) {
           pollingAbortRef.current = true; // Stop polling immediately
           setStep("success");
           setPolling(false);
-          onSuccess?.();
+          onSuccessRef.current?.();
           return;
         }
 
         if (data.error === "expired_token" || data.error === "access_denied") {
-          throw new Error(data.errorDescription || data.error);
+          const fatal = new Error(data.errorDescription || data.error);
+          fatal.__oauthFatal = true;
+          throw fatal;
         }
 
         if (data.error === "slow_down") {
           interval = Math.min(interval + 5, 30);
         }
       } catch (err) {
-        setError(err.message);
-        setStep("error");
-        setPolling(false);
-        return;
+        // Modal→server network blip: transient like a 5xx, keep polling.
+        // (Terminal provider errors throw above with data.error set, but
+        // they also land here — rethrow those so access_denied etc. still
+        // fail fast instead of polling into the deadline.)
+        if (err?.__oauthFatal) {
+          setError(err.message);
+          setStep("error");
+          setPolling(false);
+          return;
+        }
+        lastTransportError = err.message;
+        setPollWarning(err.message);
       }
     }
 
-    setError("Authorization timeout");
+    setError(lastTransportError || "Authorization timeout");
     setStep("error");
     setPolling(false);
-  }, [provider, onSuccess]);
+  }, [provider]);
 
-  // Trae/Windsurf proxy OAuth flow: dynamic-port local callback → auto exchange.
+  // Stop the proxy owned by THIS modal session, at most once. Re-renders,
+  // repeated closes, and post-completion calls are all no-ops by construction.
+  const stopOwnedProxy = useCallback(() => {
+    const flow = flowRef.current;
+    if (flow.proxyStarted && !flow.stopSent && flow.proxyProvider) {
+      flow.stopSent = true;
+      fetch(`/api/oauth/${flow.proxyProvider}/stop-proxy`).catch(() => {});
+    }
+  }, []);
+
+  // Trae/Windsurf/Zed proxy OAuth flow: dynamic-port local callback → auto exchange.
   const startProxyFlow = useCallback(async (providerId) => {
     // 1. Start the local callback server (returns a dynamic port + callback URL).
     const startRes = await fetch(`/api/oauth/${providerId}/start-proxy`);
@@ -187,31 +313,74 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     if (!startRes.ok || !startData.success || !startData.callbackUrl) {
       throw new Error(startData.reason || startData.error || `Failed to start ${providerId} callback server`);
     }
+    // Take ownership immediately so a close during the remaining flight still
+    // cleans this proxy up (via the close effect or the abort below).
+    flowRef.current.proxyStarted = true;
+    flowRef.current.proxyProvider = providerId;
+    flowRef.current.stopSent = false;
+    if (!isOpenRef.current) {
+      stopOwnedProxy();
+      return;
+    }
     // 2. Build the authorize URL with redirect_uri = proxy callback URL.
     const authorizeUrl = new URL(`/api/oauth/${providerId}/authorize`, window.location.origin);
     authorizeUrl.searchParams.set("redirect_uri", startData.callbackUrl);
     const authRes = await fetch(authorizeUrl);
     const authData = await authRes.json();
-    if (!authRes.ok) throw new Error(authData.error);
+    if (!authRes.ok) {
+      stopOwnedProxy();
+      throw new Error(authData.error);
+    }
+    if (!isOpenRef.current) {
+      stopOwnedProxy();
+      return;
+    }
     // 3. Register the session so the proxy can match the incoming callback.
-    //    Zed also passes code_verifier (encodes the RSA private key for decrypt);
-    //    sent via POST body so the private key never lands in URL/query logs.
+    //    Zed also passes code_verifier (encodes the RSA private key for decrypt)
+    //    + systemId; sent via POST body so secrets never land in URL/query logs.
     const regBody = { state: authData.state };
     if (authData.codeVerifier) regBody.codeVerifier = authData.codeVerifier;
-    await fetch(`/api/oauth/${providerId}/register-session`, {
+    if (authData.systemId) regBody.systemId = authData.systemId;
+    const regRes = await fetch(`/api/oauth/${providerId}/register-session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(regBody),
     });
+    let regData = null;
+    try {
+      regData = await regRes.json();
+    } catch {
+      regData = null;
+    }
+    if (!regRes.ok || regData?.success === false) {
+      stopOwnedProxy();
+      throw new Error(regData?.error || "Failed to register login session; please retry");
+    }
+    if (!isOpenRef.current) return; // closed mid-flight: close effect owns cleanup now
     // 4. Open popup; proxy auto-exchanges on callback, modal polls poll-status.
     setAuthData({ ...authData, proxyProvider: providerId });
     setStep("waiting");
     popupRef.current = window.open(authData.authUrl, "oauth_popup", "width=600,height=700");
     if (!popupRef.current) setStep("input"); // popup blocked → fall back to manual paste
-  }, []);
+  }, [stopOwnedProxy]);
 
-  // Start OAuth flow
-  const startOAuthFlow = useCallback(async () => {
+  // Start OAuth flow (plain function by design: it is only invoked from the
+  // open effect via ref and from user actions, so memoization would only add
+  // an identity that re-triggers effects on every parent re-render).
+  // Egress chooser (device-code only): runs the paused first attempt after an
+  // explicit choice. The choice is remembered, so this step shows once.
+  const startFromEgressChoice = () => {
+    try {
+      if (typeof window !== "undefined" && provider) {
+        window.localStorage.setItem(oauthProxyPoolChosenKey(provider), "1");
+      }
+    } catch { /* private mode — next open shows the chooser again */ }
+    setError(null);
+    setStep("waiting");
+    startOAuthFlow();
+  };
+
+  const startOAuthFlow = async () => {
     if (!provider) return;
     try {
       setError(null);
@@ -224,23 +393,14 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       }
 
       // Device code flow providers (must match oauth providers with flowType: "device_code")
-      const deviceCodeProviders = [
-        "github",
-        "kiro",
-        "kimi",
-        "kimi-coding",
-        "kilocode",
-        "codebuddy-cn",
-        "codebuddy-intl",
-        "qoder",
-        "grok-cli",
-        "freebuff",
-      ];
-      if (deviceCodeProviders.includes(provider)) {
+      if (DEVICE_CODE_PROVIDERS.includes(provider)) {
         setIsDeviceCode(true);
         setStep("waiting");
 
         const deviceCodeUrl = new URL(`/api/oauth/${provider}/device-code`, window.location.origin);
+        if (oauthProxyPoolRef.current) {
+          deviceCodeUrl.searchParams.set("proxy_pool", oauthProxyPoolRef.current);
+        }
         if (provider === "kiro" && idcConfig?.startUrl) {
           deviceCodeUrl.searchParams.set("start_url", idcConfig.startUrl);
           if (idcConfig.region) {
@@ -250,7 +410,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         }
         const res = await fetch(deviceCodeUrl.toString());
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
+        if (!res.ok) throw new Error([data.error, data.errorCause].filter(Boolean).join(" | "));
 
         setDeviceData(data);
 
@@ -269,7 +429,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
               _authMethod: data._authMethod,
               _startUrl: data._startUrl,
             }
-          : provider === "qoder"
+          : (provider === "qoder" || provider === "qoder-cn")
           ? {
               _qoderNonce: data._qoderNonce,
               _qoderMachineId: data._qoderMachineId,
@@ -311,7 +471,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       }
       const res = await fetch(authorizeUrl.toString());
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      if (!res.ok) throw new Error([data.error, data.errorCause].filter(Boolean).join(" | "));
 
       // Codex: start proxy with server-side session (auto-exchange) + fallback to channels
       let codexProxyActive = false;
@@ -357,6 +517,14 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
       setAuthData({ ...data, redirectUri, codexServerSide, xaiServerSide });
 
+      // Take ownership of server-side proxies so close stops them exactly once
+      // (replaces the per-provider stop branches; same behavior, one ledger).
+      if ((provider === "codex" && codexProxyActive) || (provider === "xai" && xaiProxyActive)) {
+        flowRef.current.proxyStarted = true;
+        flowRef.current.proxyProvider = provider;
+        flowRef.current.stopSent = false;
+      }
+
       // Guard: device_code providers return authUrl:null from /authorize. Never window.open(null)
       // (browsers coerce it to the relative path ".../null").
       if (!data.authUrl) {
@@ -397,49 +565,87 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       setError(err.message);
       setStep("error");
     }
-  }, [provider, isLocalhost, startPolling, oauthMeta, idcConfig, authMode, startProxyFlow]);
+  };
 
-  // Reset state and start OAuth when modal opens
+  // Sync latest props/flow into refs after every render (no dep array).
+  // The open effect below then depends only on stable primitives.
   useEffect(() => {
-    if (isOpen && provider) {
-      // Guard against StrictMode/effect re-runs auto-opening multiple tabs.
-      if (openedRef.current) return;
-      openedRef.current = true;
-      setAuthData(null);
-      setCallbackUrl("");
-      setError(null);
-      setIsDeviceCode(false);
-      setDeviceData(null);
-      setPolling(false);
-      setAuthMode("browser");
-      setPasteToken("");
-      setIdeStatus(null);
-      pollingAbortRef.current = false;
-      // Best-effort IDE detection for paste-token providers (Trae/Windsurf)
-      if (PASTE_TOKEN_PROVIDERS[provider]) {
-        fetch(`/api/oauth/${provider}/ide-status`)
-          .then((r) => r.json())
-          .then((data) => setIdeStatus(data))
-          .catch(() => setIdeStatus({ installed: false, path: null }));
-      }
-      startOAuthFlow();
-    } else if (!isOpen) {
-      // Abort polling and cleanup proxy when modal closes
-      pollingAbortRef.current = true;
-      openedRef.current = false;
-      if (provider === "codex") {
-        fetch("/api/oauth/codex/stop-proxy").catch(() => {});
-      } else if (provider === "xai") {
-        fetch("/api/oauth/xai/stop-proxy").catch(() => {});
-      } else if (provider === "trae") {
-        fetch("/api/oauth/trae/stop-proxy").catch(() => {});
-      } else if (provider === "windsurf") {
-        fetch("/api/oauth/windsurf/stop-proxy").catch(() => {});
-      } else if (provider === "zed") {
-        fetch("/api/oauth/zed/stop-proxy").catch(() => {});
-      }
+    onSuccessRef.current = onSuccess;
+    onCloseRef.current = onClose;
+    isOpenRef.current = isOpen;
+    startOAuthFlowRef.current = startOAuthFlow;
+  });
+
+  // Reset state and start OAuth when modal opens — exactly once per open.
+  // Guarded by openedRef so StrictMode/effect re-runs never open extra tabs.
+  useEffect(() => {
+    if (!isOpen || !provider) return;
+    if (openedRef.current) return;
+    openedRef.current = true;
+    setAuthData(null);
+    setCallbackUrl("");
+    setError(null);
+    setIsDeviceCode(false);
+    setDeviceData(null);
+    setPolling(false);
+    setPollWarning(null);
+    setAuthMode("browser");
+    setPasteToken("");
+    setIdeStatus(null);
+    pollingAbortRef.current = false;
+    flowRef.current = { proxyStarted: false, proxyProvider: null, stopSent: false };
+    // Restore the persisted proxy-pool choice for device-code providers and
+    // load the pool list for the picker (shown on egress/waiting/error steps).
+    // First open with no stored choice pauses on the egress chooser instead of
+    // burning a direct attempt that is doomed on IP-limited egress.
+    let pauseForEgressChoice = false;
+    if (DEVICE_CODE_PROVIDERS.includes(provider)) {
+      try {
+        const saved = typeof window !== "undefined"
+          ? window.localStorage.getItem(oauthProxyPoolStorageKey(provider)) || ""
+          : "";
+        oauthProxyPoolRef.current = saved;
+        setOauthProxyPoolId(saved);
+        const chosen = typeof window !== "undefined" && (
+          window.localStorage.getItem(oauthProxyPoolChosenKey(provider)) === "1" ||
+          saved !== ""
+        );
+        if (!chosen) {
+          setStep("egress");
+          pauseForEgressChoice = true;
+        }
+      } catch { oauthProxyPoolRef.current = ""; setOauthProxyPoolId(""); }
+      fetch("/api/proxy-pools?isActive=true", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => setProxyPools(Array.isArray(d?.proxyPools) ? d.proxyPools : []))
+        .catch(() => setProxyPools([]));
+    } else {
+      oauthProxyPoolRef.current = "";
+      setOauthProxyPoolId("");
+      setProxyPools([]);
     }
-  }, [isOpen, provider, startOAuthFlow]);
+    // Best-effort IDE detection for paste-token providers (Trae/Windsurf)
+    if (PASTE_TOKEN_PROVIDERS[provider]) {
+      fetch(`/api/oauth/${provider}/ide-status`)
+        .then((r) => r.json())
+        .then((data) => setIdeStatus(data))
+        .catch(() => setIdeStatus({ installed: false, path: null }));
+    }
+    if (pauseForEgressChoice) return;
+    startOAuthFlowRef.current();
+  }, [isOpen, provider]);
+
+  // Cleanup when the modal closes: abort polling and stop the proxy THIS
+  // session started, exactly once. Deps are stable primitives, so unrelated
+  // parent re-renders cannot reach the stop call (previously every parent
+  // render re-fired stop-proxy while the modal was closed).
+  useEffect(() => {
+    if (isOpen) return;
+    pollingAbortRef.current = true;
+    openedRef.current = false;
+    stopOwnedProxy();
+    flowRef.current = { proxyStarted: false, proxyProvider: null, stopSent: false };
+  }, [isOpen, provider, stopOwnedProxy]);
 
   // Server-side proxy mode (codex/xai fixed-port + trae/windsurf dynamic-port):
   // poll status until the proxy auto-exchanges and saves the connection.
@@ -468,7 +674,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         if (data.status === "done") {
           callbackProcessedRef.current = true;
           setStep("success");
-          onSuccess?.();
+          onSuccessRef.current?.();
           return;
         }
         if (data.status === "error") {
@@ -490,7 +696,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     };
     setTimeout(tick, POLL_INTERVAL_MS);
     return () => { cancelled = true; };
-  }, [authData, onSuccess]);
+  }, [authData]);
 
   // Listen for OAuth callback via multiple methods
   useEffect(() => {
@@ -588,25 +794,33 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           body: JSON.stringify({ code: token }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
+        if (!res.ok) throw new Error([data.error, data.errorCause].filter(Boolean).join(" | "));
         setStep("success");
-        onSuccess?.();
+        onSuccessRef.current?.();
         return;
       }
 
       const input = callbackUrl.trim();
 
-      // Trae/Windsurf proxy flow fallback (popup blocked): paste the full callback URL
+      // Trae/Windsurf/Zed proxy flow fallback (popup blocked): paste the full callback URL
       if (PROXY_OAUTH_PROVIDERS.has(provider) && input) {
         const res = await fetch(`/api/oauth/${provider}/exchange`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code: input, state: authData?.state }),
+          body: JSON.stringify({
+            code: input,
+            state: authData?.state,
+            // Zed manual fallback needs the same attempt material as the
+            // automatic path (redirectUri + RSA verifier + system_id).
+            ...(authData?.redirectUri ? { redirectUri: authData.redirectUri } : {}),
+            ...(authData?.codeVerifier ? { codeVerifier: authData.codeVerifier } : {}),
+            ...(authData?.systemId ? { systemId: authData.systemId } : {}),
+          }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
+        if (!res.ok) throw new Error([data.error, data.errorCause].filter(Boolean).join(" | "));
         setStep("success");
-        onSuccess?.();
+        onSuccessRef.current?.();
         return;
       }
 
@@ -653,21 +867,13 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     }
   };
 
-  // Clear session on modal close + cleanup proxy
+  // Clear session on modal close + cleanup proxy (idempotent: the owned
+  // proxy is stopped at most once across effect-close, button-close, and
+  // Escape/backdrop-close — all funnel through here or the close effect).
   const handleClose = useCallback(() => {
-    if (provider === "codex") {
-      fetch("/api/oauth/codex/stop-proxy").catch(() => {});
-    } else if (provider === "xai") {
-      fetch("/api/oauth/xai/stop-proxy").catch(() => {});
-    } else if (provider === "trae") {
-      fetch("/api/oauth/trae/stop-proxy").catch(() => {});
-    } else if (provider === "windsurf") {
-      fetch("/api/oauth/windsurf/stop-proxy").catch(() => {});
-    } else if (provider === "zed") {
-      fetch("/api/oauth/zed/stop-proxy").catch(() => {});
-    }
-    onClose();
-  }, [onClose, provider]);
+    stopOwnedProxy();
+    onCloseRef.current();
+  }, [stopOwnedProxy]);
 
   if (!provider || !providerInfo) return null;
   const isXaiProvider = provider === "xai";
@@ -822,6 +1028,31 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           </>
         )}
 
+        {/* Egress chooser — device-code first run with no stored choice */}
+        {step === "egress" && DEVICE_CODE_PROVIDERS.includes(provider) && (
+          <div className="space-y-3 py-2">
+            <p className="text-sm text-text-muted">
+              Choose how this login request reaches {providerInfo.name}. Direct uses this
+              server&apos;s IP; pick a pool if direct fails (IP-limited networks, Docker).
+            </p>
+            <OAuthProxyPoolSelect pools={proxyPools} value={oauthProxyPoolId} onChange={selectOauthProxyPool} />
+            {proxyPools.length === 0 && (
+              <p className="text-xs text-text-muted">
+                No proxy pools configured — continuing direct. Pools can be added under Dashboard → Proxy Pools.
+              </p>
+            )}
+            <div className="flex gap-2">
+              <Button onClick={startFromEgressChoice} fullWidth>
+                Start Login{oauthProxyPoolId ? " via Pool" : ""}
+              </Button>
+              <Button onClick={handleClose} variant="ghost" fullWidth>
+                Cancel
+              </Button>
+            </div>
+            <p className="text-[11px] text-text-muted">Your choice is remembered for next time.</p>
+          </div>
+        )}
+
         {/* Device Code Flow - Waiting */}
         {step === "waiting" && isDeviceCode && deviceData && (
           <>
@@ -851,6 +1082,10 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
                   </Button>
                 </div>
               </div>
+              {/* Some flows (codebuddy-cn/intl, sometimes freebuff) carry no
+                  user code — auth happens purely via the login URL + state.
+                  Hide the box instead of showing an empty one. */}
+              {deviceData.user_code && (
               <div className="bg-primary/10 p-4 rounded-lg">
                 <p className="text-xs text-text-muted mb-1">Your Code</p>
                 <div className="flex items-center justify-center gap-2">
@@ -863,6 +1098,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
                   />
                 </div>
               </div>
+              )}
             </div>
             {polling && (
               <div className="flex items-center justify-center gap-2 text-sm text-text-muted">
@@ -870,6 +1106,14 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
                 Waiting for authorization...
               </div>
             )}
+            {polling && pollWarning && (
+              <p className="text-center text-[11px] text-amber-600 dark:text-amber-400">
+                Retrying after poll failure: {pollWarning}
+              </p>
+            )}
+            <div className="mt-3">
+              <OAuthProxyPoolSelect pools={proxyPools} value={oauthProxyPoolId} onChange={selectOauthProxyPool} />
+            </div>
           </>
         )}
 
@@ -897,6 +1141,16 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
             </div>
             <h3 className="text-lg font-semibold mb-2">Connection Failed</h3>
             <p className="text-sm text-red-600 mb-4">{error}</p>
+            {isDeviceCode && (
+              <div className="mb-4 text-left">
+                <OAuthProxyPoolSelect pools={proxyPools} value={oauthProxyPoolId} onChange={selectOauthProxyPool} />
+                {oauthProxyPoolId && (
+                  <p className="mt-1 text-[11px] text-text-muted">
+                    Retry will send this OAuth request via the selected pool.
+                  </p>
+                )}
+              </div>
+            )}
             <div className="flex gap-2">
               <Button onClick={startOAuthFlow} variant="secondary" fullWidth>
                 Try Again

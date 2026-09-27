@@ -4,6 +4,7 @@ import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js";
+import { CODEX_CLI_VERSION } from "open-sse/config/appConstants.js";
 import {
   refreshProviderCredentials,
   shouldRefreshCredentials,
@@ -18,6 +19,7 @@ import {
   KIMCHI_CONFIG,
 } from "@/lib/oauth/constants/oauth";
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
+import { decodeJwtPayload } from "@/lib/oauth/providerHelpers";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -27,7 +29,7 @@ const OAUTH_TEST_CONFIG = {
     method: "POST",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
-    extraHeaders: { "Content-Type": "application/json", "originator": "codex_cli_rs", "User-Agent": "codex_cli_rs/0.136.0" },
+    extraHeaders: { "Content-Type": "application/json", "originator": "codex_cli_rs", "User-Agent": `codex_cli_rs/${CODEX_CLI_VERSION}` },
     // Minimal invalid body — triggers fast 400 without consuming quota
     body: JSON.stringify({ model: "gpt-5.3-codex", input: [], stream: false, store: false }),
     // 400 (bad request) means auth succeeded; only 401/403 means token is bad
@@ -73,6 +75,14 @@ const OAUTH_TEST_CONFIG = {
     authPrefix: "Bearer ",
     refreshable: false,
   },
+  "qoder-cn": {
+    // Same shape as intl qoder, CN host.
+    url: "https://openapi.qoder.com.cn/api/v1/userinfo",
+    method: "GET",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    refreshable: false,
+  },
   kimi: { checkExpiry: true, refreshable: true },
   "kimi-coding": { checkExpiry: true, refreshable: true },
   cursor: { tokenExists: true },
@@ -91,6 +101,26 @@ const OAUTH_TEST_CONFIG = {
     authPrefix: "Bearer ",
   },
   "codebuddy-cn": { tokenExists: true },
+  // GUARD — DO NOT REMOVE. See AGENTS.md §4. Without this entry, Test Connection
+  // returns "Provider test not supported". codebuddy-intl access tokens are
+  // Keycloak JWTs (iss .../auth/realms/copilot); probe the realm's userinfo
+  // endpoint so a revoked/expired token is caught. Derive the realm URL from the
+  // token's `iss` claim, falling back to the known copilot realm.
+  // 200 = valid, 401 = invalid/revoked.
+  // Covered by tests/unit/codebuddy-intl-connection.test.js.
+  "codebuddy-intl": {
+    buildUrl: (token) => {
+      const iss = decodeJwtPayload(token)?.iss;
+      const base = typeof iss === "string" && iss.startsWith("https://")
+        ? iss.replace(/\/$/, "")
+        : "https://www.codebuddy.ai/auth/realms/copilot";
+      return `${base}/protocol/openid-connect/userinfo`;
+    },
+    method: "GET",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    refreshable: true,
+  },
   kimchi: {
     url: KIMCHI_CONFIG.validationUrl || "https://api.cast.ai/v1/llm/openai/supported-providers",
     method: "GET",
@@ -253,7 +283,7 @@ async function refreshOAuthToken(connection) {
       return { accessToken: data.access_token, expiresIn: data.expires_in, refreshToken: data.refresh_token || refreshToken };
     }
 
-    if (provider === "codex" || provider === "grok-cli" || provider === "xai") {
+    if (provider === "codex" || provider === "grok-cli" || provider === "xai" || provider === "codebuddy-intl") {
       return await refreshProviderCredentials(provider, connection, console);
     }
 
@@ -765,6 +795,12 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         const valid = !!(data && data.user);
         return { valid, error: valid ? null : "Session expired — re-paste cookie" };
       }
+      case "opencode": {
+        const res = await fetchWithConnectionProxy("https://opencode.ai/zen/v1/models", {
+          headers: { Authorization: "Bearer public", "User-Agent": "opencode/1.18.31" },
+        }, effectiveProxy);
+        return { valid: res.ok, error: res.ok ? null : "OpenCode free tier unavailable" };
+      }
       case "opencode-go": {
         const res = await fetchWithConnectionProxy("https://opencode.ai/zen/go/v1/chat/completions", {
           method: "POST",
@@ -789,12 +825,16 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key" };
       }
-      case "qoder": {
+      case "qoder":
+      case "qoder-cn": {
         // PAT (pt-...) exchange → job token. A successful exchange proves the PAT.
+        const exchangeUrl = provider === "qoder-cn"
+          ? "https://openapi.qoder.com.cn/api/v1/jobToken/exchange"
+          : "https://openapi.qoder.sh/api/v1/jobToken/exchange";
         const raw = connection.apiKey || "";
         const pat = raw.startsWith("pt-") ? raw : `pt-${raw}`;
         const exRes = await fetchWithConnectionProxy(
-          "https://openapi.qoder.sh/api/v1/jobToken/exchange",
+          exchangeUrl,
           {
             method: "POST",
             headers: {
