@@ -1,0 +1,167 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # Every hour: keep master synced from upstream, then regenerate custom-patch from master.
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  sync:
+    # Guard: this workflow only makes sense on `master`, where it tracks
+    # decolua/9router and regenerates `custom-patch`.
+    # On `sync-mibp` it would run pointlessly (and target the wrong remote):
+    # that branch is synced from mhiqrambg/9router-mibp-version by sync-mibp.yml.
+    if: github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: master
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Sync upstream → master → custom-patch
+        id: check
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/decolua/9router.git || git remote set-url upstream https://github.com/decolua/9router.git
+          git fetch upstream master
+          git fetch origin master custom-patch || true
+          BEFORE_MASTER=$(git rev-parse origin/master 2>/dev/null || git rev-parse HEAD)
+          BEFORE_CUSTOM=$(git rev-parse origin/custom-patch 2>/dev/null || echo none)
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 1) Keep repo master tracking upstream master.
+          # Use reset+restore rather than `git merge` so the resulting commit
+          # never touches .github/workflows/* files. Otherwise GitHub rejects
+          # the push with "refusing to allow a GitHub App to create or update
+          # workflow ... without `workflows` permission" — GITHUB_TOKEN (used
+          # here, no GH_PAT) doesn't have `workflows: write`.
+          git checkout master
+          HEAD_REF=$(git rev-parse HEAD)
+
+          if git merge-base --is-ancestor HEAD upstream/master; then
+            echo "ℹ️ Already up to date with upstream/master."
+            NEEDS_FORCE=false
+          elif git merge --ff-only upstream/master; then
+            echo "Fast-forwarded master to upstream/master."
+            NEEDS_FORCE=false
+          else
+            echo "Upstream diverged from master; resetting to upstream/master (with CI files restored)."
+            git reset --hard upstream/master
+            # Drop every workflow file from upstream — we maintain our own variants
+            # of these (and add new ones like tray-binaries.yml) which need our
+            # local secrets/permissions and don't belong on a public fork.
+            # Doing this generically (no protected-list to keep in sync) means
+            # any new .github/workflows/* file from upstream is automatically
+            # excluded from our push, sidestepping GitHub's "workflows: write"
+            # gate that GITHUB_TOKEN lacks.
+            git rm -rf --quiet .github/workflows/ || true
+            # Restore our workflows from the pre-reset master HEAD.
+            if git cat-file -e "$HEAD_REF:.github/workflows/" 2>/dev/null; then
+              git checkout "$HEAD_REF" -- .github/workflows/
+              echo "Restored .github/workflows/ from $HEAD_REF"
+            fi
+            # Restore scripts/apply-custom-patches.mjs (fork-only — drives the
+            # custom-patch branch regeneration below; without it the workflow
+            # errors with "Cannot find module" because upstream doesn't have it).
+            if git cat-file -e "$HEAD_REF:scripts/apply-custom-patches.mjs" 2>/dev/null; then
+              git checkout "$HEAD_REF" -- scripts/apply-custom-patches.mjs
+              echo "Restored scripts/apply-custom-patches.mjs from $HEAD_REF"
+            fi
+            NEEDS_FORCE=true
+          fi
+
+          # Abort if upstream ever introduces conflict markers.
+          if git grep -n -E '^(<<<<<<<|>>>>>>>) ' -- .; then
+            echo "Conflict markers found after sync; aborting."
+            exit 1
+          fi
+
+          git add -A
+          if git diff --cached --quiet HEAD; then
+            echo "ℹ️ No upstream changes to apply."
+          else
+            git commit -m "chore(sync): merge decolua upstream into master (CI files preserved)"
+          fi
+
+          if [ "$NEEDS_FORCE" = "true" ]; then
+            git push --force-with-lease origin master
+          else
+            git push origin master
+          fi
+
+          # Regardless of which sync path above (fast-forward, already-up-to-date, or
+          # diverged reset), master HEAD now points at upstream/master's tree —
+          # which lacks fork-only files like scripts/apply-custom-patches.mjs.
+          # The custom-patch step below needs that script.
+          #
+          # After fast-forward / no-op sync, HEAD_REF already equals upstream/master,
+          # so checking out from it gives us the same empty file. Source from
+          # origin/sync-mibp instead — that branch always carries the fork's
+          # accumulated content (it's where the rebrand, URL state persistence,
+          # and other custom commits live). The script content there is the same
+          # as on master before the reset.
+          if git cat-file -e "origin/sync-mibp:scripts/apply-custom-patches.mjs" 2>/dev/null; then
+            git checkout "origin/sync-mibp" -- scripts/apply-custom-patches.mjs
+            echo "Restored scripts/apply-custom-patches.mjs from origin/sync-mibp"
+          fi
+
+          # Stage and commit the restored script so subsequent runs find it tracked.
+          git add scripts/apply-custom-patches.mjs 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(sync): re-apply fork-only script that upstream lacks" || true
+          fi
+
+          # 2) Regenerate custom-patch from the freshest master, then apply our patch script.
+          # This avoids custom-patch silently lagging behind master.
+          git checkout -B custom-patch master
+          node scripts/apply-custom-patches.mjs
+
+          if ! git diff --quiet; then
+            git add \
+              src/app/api/providers/route.js \
+              src/shared/constants/config.js \
+              src/shared/constants/colors.js \
+              src/app/globals.css \
+              src/shared/utils/serialModelTests.js \
+              tests/unit/serialModelTests.test.js \
+              'src/app/(dashboard)/dashboard/providers/[id]/page.js' \
+              'src/app/(dashboard)/dashboard/providers/[id]/ModelRow.js' \
+              scripts/apply-custom-patches.mjs \
+              .github/workflows/sync-upstream.yml
+            git commit -m "feat: apply custom 9router patches"
+          fi
+
+          git push --force-with-lease origin custom-patch
+
+          AFTER_MASTER=$(git rev-parse master)
+          AFTER_CUSTOM=$(git rev-parse custom-patch)
+
+          if [ "$BEFORE_MASTER" != "$AFTER_MASTER" ] || [ "$BEFORE_CUSTOM" != "$AFTER_CUSTOM" ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Branches updated, triggering image build from custom-patch..."
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ️ No branch changes."
+          fi
+
+  build-and-push:
+    needs: sync
+    if: needs.sync.outputs.has_changes == 'true'
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      ref: custom-patch
+    secrets: inherit
