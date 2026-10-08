@@ -1,0 +1,237 @@
+name: Sync MIBP
+
+# Keeps the `sync-mibp` branch up to date with its real upstream:
+#   mhiqrambg/9router-mibp-version (default branch: master)
+#
+# NOTE: `sync-mibp` does NOT come from decolua/9router. It is a fork of
+# mhiqrambg/9router-mibp-version. Upstream tracking for decolua/9router is
+# handled separately by sync-upstream.yml (master + custom-patch).
+#
+# What this workflow does, every hour:
+#   1. Merge mhiqrambg/9router-mibp-version@master into sync-mibp (-X theirs on conflict).
+#   2. Refresh npm dependencies inside their semver ranges (npm update) and commit the lockfile.
+#   3. Trigger the Docker image build from sync-mibp if anything changed.
+
+on:
+  schedule:
+    - cron: '15 * * * *'
+  workflow_dispatch:
+    inputs:
+      skip_deps:
+        description: Skip npm dependency refresh
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: sync-mibp
+  cancel-in-progress: false
+
+env:
+  # The real upstream for the sync-mibp branch.
+  MIBP_UPSTREAM: https://github.com/mhiqrambg/9router-mibp-version.git
+  BRANCH: sync-mibp
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.sync.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: sync-mibp
+          # GH_PAT (not GITHUB_TOKEN) is required: upstream modifies files under
+          # .github/workflows/, and GITHUB_TOKEN is forbidden from pushing those
+          # ("refusing to allow a GitHub App to create or update workflow ...").
+          token: ${{ secrets.GH_PAT }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Sync mibp upstream -> sync-mibp
+        id: sync
+        env:
+          INPUT_SKIP_DEPS: ${{ inputs.skip_deps }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git remote add mibp "$MIBP_UPSTREAM" || git remote set-url mibp "$MIBP_UPSTREAM"
+          git fetch mibp master
+          git fetch origin "$BRANCH" || true
+
+          # 1) Bring the branch in line with upstream, preferring upstream on conflict.
+          git checkout "$BRANCH"
+          BEFORE_TREE=$(git rev-parse "HEAD^{tree}")
+
+          # Same content already? Skip the merge entirely to avoid empty merge commits.
+          if git merge-base --is-ancestor "mibp/master" HEAD; then
+            echo "Already up to date with mibp/master."
+            NEEDS_FORCE=false
+          elif git merge --ff-only "mibp/master"; then
+            echo "Fast-forwarded $BRANCH to mibp/master"
+            NEEDS_FORCE=false
+          elif git merge "mibp/master" --no-edit -X theirs; then
+            echo "Merged mibp/master into $BRANCH (theirs on conflict)"
+            NEEDS_FORCE=false
+          else
+            # Upstream rewrote history or has an intractable conflict: follow upstream.
+            echo "Merge failed; resetting $BRANCH to mibp/master (history rewrite)"
+            git merge --abort 2>/dev/null || true
+            git reset --hard "mibp/master"
+            NEEDS_FORCE=true
+          fi
+
+          # Abort if upstream ever introduces conflict markers.
+          if git grep -n -E '^(<<<<<<<|>>>>>>>) ' -- .; then
+            echo "Conflict markers found after merge; aborting."
+            exit 1
+          fi
+
+          # 1b) Protect our own CI from upstream. mhiqrambg/9router-mibp-version
+          # does not carry these files, so a merge would DELETE sync-mibp.yml and
+          # sync-upstream.yml, and OVERWRITE docker-publish.yml with a variant that
+          # pushes to Docker Hub. Restore the pre-merge versions from BEFORE_REF.
+          git fetch origin "$BRANCH"
+          BEFORE_REF=$(git rev-parse "origin/$BRANCH")
+          for f in \
+            .github/workflows/sync-mibp.yml \
+            .github/workflows/sync-upstream.yml \
+            .github/workflows/docker-publish.yml \
+            .github/workflows/gitbook-pages.yml.disabled \
+            .github/dependabot.yml
+          do
+            if git cat-file -e "$BEFORE_REF:$f" 2>/dev/null; then
+              git checkout "$BEFORE_REF" -- "$f"
+              echo "Restored $f from $BEFORE_REF"
+            fi
+          done
+
+          # 1c) Guard the MIBP-only chat handler. Upstream deliberately dropped
+          # `preferredConnectionId` from src/sse/handlers/chat.js, but this fork
+          # needs it (Antigravity MITM pins an account via `x-connection-id`).
+          # A naive merge produces the worst of both worlds: declaration removed,
+          # usages kept -> every combo request throws
+          #   ReferenceError: preferredConnectionId is not defined
+          # Detect that exact state and restore our copy instead of shipping it.
+          CHAT=src/sse/handlers/chat.js
+          if git cat-file -e "$BEFORE_REF:$CHAT" 2>/dev/null; then
+            USES=$(grep -c 'preferredConnectionId' "$CHAT" || true)
+            DECLS=$(grep -cE '(const|let|var)[[:space:]]+preferredConnectionId' "$CHAT" || true)
+            if [ "$USES" -gt 0 ] && [ "$DECLS" -eq 0 ]; then
+              echo "::warning::$CHAT has orphan preferredConnectionId (uses=$USES decls=$DECLS); restoring our version."
+              git checkout "$BEFORE_REF" -- "$CHAT"
+            else
+              echo "$CHAT OK (uses=$USES decls=$DECLS)"
+            fi
+          fi
+          for f in tests/unit/preferredConnectionIdScope.test.js; do
+            if git cat-file -e "$BEFORE_REF:$f" 2>/dev/null && [ ! -f "$f" ]; then
+              git checkout "$BEFORE_REF" -- "$f"
+              echo "Restored $f from $BEFORE_REF"
+            fi
+          done
+          # If upstream deleted this file, drop the deletion so it stays on this branch.
+          git diff --name-only --diff-filter=D HEAD | grep -E '^\.github/' || true
+
+          # 2) Refresh dependencies within their declared semver ranges.
+          if [ "${INPUT_SKIP_DEPS:-false}" != "true" ] && [ -f package.json ]; then
+            echo "::group::npm update (semver-safe)"
+            npm update --no-audit --no-fund 2>&1 | tail -n 40 || \
+              echo "npm update failed; continuing with upstream code only."
+            echo "::endgroup::"
+          else
+            echo "Dependency refresh skipped."
+          fi
+
+          # 2b) Hard gate: a merge must never reintroduce an orphan
+          # preferredConnectionId. Fail the job instead of pushing broken code.
+          if [ -f "$CHAT" ]; then
+            USES=$(grep -c 'preferredConnectionId' "$CHAT" || true)
+            DECLS=$(grep -cE '(const|let|var)[[:space:]]+preferredConnectionId' "$CHAT" || true)
+            if [ "$USES" -gt 0 ] && [ "$DECLS" -eq 0 ]; then
+              echo "::error::$CHAT would throw 'preferredConnectionId is not defined' (uses=$USES decls=$DECLS). Refusing to push."
+              exit 1
+            fi
+          fi
+          node --check "$CHAT" 2>&1 || { echo "::error::$CHAT failed syntax check"; exit 1; }
+
+          # 3) Commit only when the working tree actually changed.
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Working tree clean after sync."
+          else
+            git commit -m "chore(sync): merge mibp upstream + refresh dependencies"
+          fi
+
+          # 4) Compare TREE hashes (content), not commit SHAs: a no-op merge
+          #    commit must not trigger a rebuild.
+          AFTER_TREE=$(git rev-parse "HEAD^{tree}")
+          if [ "$BEFORE_TREE" = "$AFTER_TREE" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No content changes (tree $AFTER_TREE)"
+          else
+            if [ "$NEEDS_FORCE" = "true" ]; then
+              git push --force-with-lease origin "$BRANCH"
+            else
+              git push origin "$BRANCH"
+            fi
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Pushed $BRANCH (tree $BEFORE_TREE -> $AFTER_TREE)"
+          fi
+
+  # Self-contained GHCR-only build. We deliberately do NOT reuse
+  # docker-publish.yml: upstream (mhiqrambg) removed its `workflow_call` trigger
+  # and that workflow now pushes to Docker Hub, which needs DOCKERHUB_* secrets
+  # we do not maintain on this fork.
+  build-and-push:
+    needs: sync
+    if: needs.sync.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: sync-mibp
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=max
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
