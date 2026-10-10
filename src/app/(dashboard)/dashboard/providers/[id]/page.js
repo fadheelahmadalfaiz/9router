@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/providerIcon";
-import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, XiaomiMimoAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, Checkbox, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
+import { Card, Button, Badge, Input, Modal, CardSkeleton, OAuthModal, KiroOAuthWrapper, CursorAuthModal, ZedAuthModal, XiaomiMimoAuthModal, IFlowCookieModal, GitLabAuthModal, Toggle, Select, EditConnectionModal, NoAuthProxyCard, ConfirmModal } from "@/shared/components";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, getProviderAlias, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getThinkingLevels } from "open-sse/providers/thinkingLevels.js";
@@ -14,8 +14,6 @@ import { useModelCaps } from "@/shared/hooks/useModelCaps";
 import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
-import { runSerialModelTests } from "@/shared/utils/serialModelTests";
-import { useNotificationStore } from "@/store/notificationStore";
 import ModelRow from "./ModelRow";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
@@ -25,7 +23,7 @@ import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
-import RevealKeyModal from "./RevealKeyModal";
+import CustomConfigCard from "./CustomConfigCard";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
@@ -36,17 +34,6 @@ const AUTO_PING_SETTINGS_KEYS = {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function createInitialModelAutoTestProgress() {
-  return {
-    total: 0,
-    completed: 0,
-    passed: 0,
-    failed: 0,
-    stopped: false,
-    currentModelId: null,
-  };
 }
 
 export default function ProviderDetailPage() {
@@ -75,16 +62,12 @@ export default function ProviderDetailPage() {
   const [modelTestResults, setModelTestResults] = useState({});
   const [modelsTestError, setModelsTestError] = useState("");
   const [testingModelIds, setTestingModelIds] = useState(() => new Set());
-  const [autoTestingModels, setAutoTestingModels] = useState(false);
-  const [autoTestProgress, setAutoTestProgress] = useState(createInitialModelAutoTestProgress);
-  const autoTestAbortRef = useRef(null);
   const [showAddCustomModel, setShowAddCustomModel] = useState(false);
   const [selectedConnectionIds, setSelectedConnectionIds] = useState([]);
   const [bulkProxyPoolId, setBulkProxyPoolId] = useState("__none__");
   const [bulkUpdatingProxy, setBulkUpdatingProxy] = useState(false);
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
-  const [strictModelAssignment, setStrictModelAssignment] = useState(false);
   const [thinkingMode, setThinkingMode] = useState("auto");
   const [autoPing, setAutoPing] = useState({ enabled: false, connections: {} });
   const [suggestedModels, setSuggestedModels] = useState([]);
@@ -102,10 +85,8 @@ export default function ProviderDetailPage() {
   const [oneByOneSummary, setOneByOneSummary] = useState(null);
   const stopOneByOneRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
-  const [revealTarget, setRevealTarget] = useState(null);
   const [importingClineModels, setImportingClineModels] = useState(false);
   const { copied, copy } = useCopyToClipboard();
-  const notify = useNotificationStore();
 
   const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
 
@@ -201,21 +182,6 @@ export default function ProviderDetailPage() {
     return levels && levels.includes(thinkingMode) ? thinkingMode : null;
   };
   const providerStorageAlias = isCompatible ? providerId : providerAlias;
-  const assignmentModels = (() => {
-    const byId = new Map();
-    const add = (model) => {
-      if (model?.id && !byId.has(model.id)) byId.set(model.id, model);
-    };
-    models.forEach(add);
-    kiloFreeModels.forEach(add);
-    customModels.forEach((model) => {
-      if (model.providerAlias === providerStorageAlias && (model.kind || model.type || "llm") === "llm") {
-        add(model);
-      }
-    });
-    const disabled = new Set(disabledModelIds);
-    return [...byId.values()].filter((model) => !disabled.has(model.id));
-  })();
   // Union of levels across this provider's reasoning models — drives the level picker options.
   // Include custom models too (e.g. manually added gpt-5.6-sol → max).
   const providerThinkingLevels = (() => {
@@ -359,7 +325,6 @@ export default function ProviderDetailPage() {
       const override = (settingsData.providerStrategies || {})[providerId] || {};
       setProviderStrategy(override.fallbackStrategy || null);
       setProviderStickyLimit(override.stickyRoundRobinLimit != null ? String(override.stickyRoundRobinLimit) : "1");
-      setStrictModelAssignment(override.strictModelAssignment === true);
       // Load per-provider thinking config
       const thinkingCfg = (settingsData.providerThinking || {})[providerId] || {};
       setThinkingMode(thinkingCfg.mode || "auto");
@@ -415,13 +380,9 @@ export default function ProviderDetailPage() {
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
       const current = settingsData.providerStrategies || {};
 
-      // Preserve Freebuff-only settings while changing the shared strategy.
-      const override = { ...(current[providerId] || {}) };
+      // Build override: null strategy means remove override, use global
+      const override = {};
       if (strategy) override.fallbackStrategy = strategy;
-      else {
-        delete override.fallbackStrategy;
-        delete override.stickyRoundRobinLimit;
-      }
       if (strategy === "round-robin" && stickyLimit !== "") {
         override.stickyRoundRobinLimit = Number(stickyLimit) || 3;
       }
@@ -440,44 +401,6 @@ export default function ProviderDetailPage() {
       });
     } catch (error) {
       console.log("Error saving provider strategy:", error);
-    }
-  };
-
-  const handleStrictAssignmentToggle = async (enabled) => {
-    setStrictModelAssignment(enabled);
-    try {
-      const settingsRes = await fetch("/api/settings", { cache: "no-store" });
-      const settingsData = settingsRes.ok ? await settingsRes.json() : {};
-      const current = settingsData.providerStrategies || {};
-      await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          providerStrategies: {
-            ...current,
-            [providerId]: { ...(current[providerId] || {}), strictModelAssignment: enabled },
-          },
-        }),
-      });
-    } catch (error) {
-      console.log("Error saving Freebuff strict assignment:", error);
-    }
-  };
-
-  const handleModelAssignment = async (connectionId, assignedModel) => {
-    try {
-      const res = await fetch(`/api/providers/${connectionId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerSpecificData: { assignedModel: assignedModel || null } }),
-      });
-      if (res.ok) {
-        setConnections((prev) => prev.map((c) => c.id === connectionId
-          ? { ...c, providerSpecificData: { ...(c.providerSpecificData || {}), assignedModel: assignedModel || null } }
-          : c));
-      }
-    } catch (error) {
-      console.log("Error saving Freebuff model assignment:", error);
     }
   };
 
@@ -541,12 +464,10 @@ export default function ProviderDetailPage() {
   };
 
   useEffect(() => {
-    void Promise.resolve().then(() => {
-      fetchConnections();
-      fetchAliases();
-      fetchCustomModels();
-      fetchDisabledModels();
-    });
+    fetchConnections();
+    fetchAliases();
+    fetchCustomModels();
+    fetchDisabledModels();
   }, [fetchConnections, fetchAliases, fetchCustomModels, fetchDisabledModels]);
 
   // Live per-connection catalogs (cursor, zed): the static registry carries
@@ -556,13 +477,13 @@ export default function ProviderDetailPage() {
   useEffect(() => {
     const isLiveCatalog = providerId === "cursor" || providerId === "zed";
     if (!isLiveCatalog) {
-      queueMicrotask(() => setLiveModels([]));
+      setLiveModels([]);
       return;
     }
 
     const connection = connections.find((item) => item.isActive !== false);
     if (!connection?.id) {
-      queueMicrotask(() => setLiveModels([]));
+      setLiveModels([]);
       if (providerId === "zed") setLiveModelsError(null);
       return;
     }
@@ -632,12 +553,14 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const handleAddCustomModel = async (modelId, type = "llm", providerAliasOverride = providerStorageAlias, caps) => {
+  // `transport` pins a realtime STT dispatch marker (shared whitelist
+  // STT_TRANSPORT_META); the API only honours it on type "stt" records.
+  const handleAddCustomModel = async (modelId, type = "llm", providerAliasOverride = providerStorageAlias, caps, transport) => {
     try {
       const res = await fetch("/api/models/custom", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerAlias: providerAliasOverride, id: modelId, type, ...(caps ? { caps } : {}) }),
+        body: JSON.stringify({ providerAlias: providerAliasOverride, id: modelId, type, ...(caps ? { caps } : {}), ...(transport ? { transport } : {}) }),
       });
       if (res.ok) {
         await fetchCustomModels();
@@ -858,33 +781,6 @@ export default function ProviderDetailPage() {
     setOneByOneStopping(true);
   };
 
-  const getNonCompatibleLlmModelRows = () => {
-    const allModels = [
-      ...models,
-      ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
-    ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; });
-    const disabledSet = new Set(disabledModelIds);
-    const displayModels = allModels.filter((m) => !disabledSet.has(m.id));
-    const disabledDisplayModels = allModels.filter((m) => disabledSet.has(m.id));
-    const customModelRows = getProviderCustomModelRows({
-      customModels,
-      modelAliases,
-      providerAlias: providerStorageAlias,
-      builtInModels: models,
-      type: "llm",
-    });
-    const testableModels = [];
-    const seenIds = new Set();
-
-    for (const model of [...customModelRows, ...displayModels]) {
-      if (!model.id || seenIds.has(model.id)) continue;
-      seenIds.add(model.id);
-      testableModels.push({ id: model.id });
-    }
-
-    return { displayModels, disabledDisplayModels, customModelRows, testableModels };
-  };
-
   const handleDelete = async (id) => {
     setConfirmState({
       title: "Delete Connection",
@@ -1024,9 +920,7 @@ export default function ProviderDetailPage() {
     }
   };
 
-  const connectionIds = new Set(connections.map((conn) => conn.id));
-  const validSelectedConnectionIds = selectedConnectionIds.filter((id) => connectionIds.has(id));
-  const selectedConnections = connections.filter((conn) => validSelectedConnectionIds.includes(conn.id));
+  const selectedConnections = connections.filter((conn) => selectedConnectionIds.includes(conn.id));
   const allSelected = connections.length > 0 && selectedConnectionIds.length === connections.length;
 
   const toggleSelectConnection = (connectionId) => {
@@ -1051,9 +945,7 @@ export default function ProviderDetailPage() {
   };
 
   useEffect(() => {
-    queueMicrotask(() => {
-      setSelectedConnectionIds((prev) => prev.filter((id) => connections.some((conn) => conn.id === id)));
-    });
+    setSelectedConnectionIds((prev) => prev.filter((id) => connections.some((conn) => conn.id === id)));
   }, [connections]);
 
   const selectedProxySummary = (() => {
@@ -1132,11 +1024,11 @@ export default function ProviderDetailPage() {
         .map((conn, index) => (
           <div key={conn.id} className="flex min-w-0 items-stretch">
             <div className="flex shrink-0 items-center pl-1 sm:pl-2">
-              <Checkbox
+              <input
+                type="checkbox"
                 checked={isSelected(conn.id)}
                 onChange={() => toggleSelectConnection(conn.id)}
-                size="sm"
-                ariaLabel={`Select ${conn.name || conn.email || conn.id}`}
+                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
               />
             </div>
             <div className="flex-1 min-w-0">
@@ -1154,39 +1046,17 @@ export default function ProviderDetailPage() {
                   onToggle: (on) => handleAutoPingConnection(conn.id, on),
                   provider: providerId,
                 } : null}
-                onUpdateProxy={async (proxyConfig) => {
+                onUpdateProxy={async (proxyPoolId) => {
                   try {
-                    // Support both new format (object) and legacy format (string/null)
-                    const updatePayload = typeof proxyConfig === 'object' && proxyConfig !== null
-                      ? {
-                          proxyPoolIds: proxyConfig.proxyPoolIds || [],
-                          proxyRotationStrategy: proxyConfig.proxyRotationStrategy || "none",
-                        }
-                      : {
-                          // Legacy single-proxy format
-                          proxyPoolId: proxyConfig || null,
-                        };
-
                     const res = await fetch(`/api/providers/${conn.id}`, {
                       method: "PUT",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify(updatePayload),
+                      body: JSON.stringify({ proxyPoolId: proxyPoolId || null }),
                     });
                     if (res.ok) {
                       setConnections(prev => prev.map(c =>
                         c.id === conn.id
-                          ? { 
-                              ...c, 
-                              providerSpecificData: { 
-                                ...c.providerSpecificData, 
-                                ...(updatePayload.proxyPoolIds !== undefined ? {
-                                  proxyPoolIds: updatePayload.proxyPoolIds,
-                                  proxyRotationStrategy: updatePayload.proxyRotationStrategy,
-                                } : {
-                                  proxyPoolId: updatePayload.proxyPoolId,
-                                })
-                              } 
-                            }
+                          ? { ...c, providerSpecificData: { ...c.providerSpecificData, proxyPoolId: proxyPoolId || null } }
                           : c
                       ));
                     }
@@ -1198,12 +1068,8 @@ export default function ProviderDetailPage() {
                   setSelectedConnection(conn);
                   setShowEditModal(true);
                 }}
-                onCopyKey={() => setRevealTarget(conn)}
                 onDelete={() => handleDelete(conn.id)}
                 oneByOneStatus={oneByOneResults[conn.id] || null}
-                modelAssignmentOptions={assignmentModels}
-                onModelAssignmentChange={(model) => handleModelAssignment(conn.id, model)}
-                strictModelAssignment={strictModelAssignment}
               />
             </div>
           </div>
@@ -1263,7 +1129,7 @@ export default function ProviderDetailPage() {
   );
 
   const handleTestModel = async (modelId) => {
-    if (testingModelIds.has(modelId) || autoTestingModels) return;
+    if (testingModelIds.has(modelId)) return;
     setTestingModelIds((prev) => new Set(prev).add(modelId));
     try {
       const res = await fetch("/api/models/test", {
@@ -1280,81 +1146,6 @@ export default function ProviderDetailPage() {
     } finally {
       setTestingModelIds((prev) => { const n = new Set(prev); n.delete(modelId); return n; });
     }
-  };
-
-  const testOneAvailableModel = async (modelId, { signal } = {}) => {
-    const res = await fetch("/api/models/test", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: `${providerStorageAlias}/${modelId}` }),
-      signal,
-    });
-    return res.json();
-  };
-
-  const handleAutoTestAvailableModels = async () => {
-    if (autoTestingModels || testingModelIds.size > 0 || isCompatible) return;
-
-    const { testableModels } = getNonCompatibleLlmModelRows();
-    if (testableModels.length === 0) return;
-
-    const controller = new AbortController();
-    autoTestAbortRef.current = controller;
-    setAutoTestingModels(true);
-    setModelsTestError("");
-    setAutoTestProgress({ ...createInitialModelAutoTestProgress(), total: testableModels.length });
-    setModelTestResults((prev) => {
-      const next = { ...prev };
-      for (const model of testableModels) delete next[model.id];
-      return next;
-    });
-
-    try {
-      const outcome = await runSerialModelTests(
-        testableModels,
-        (model, options) => testOneAvailableModel(model.id, options),
-        {
-          onStart: (model) => {
-            setTestingModelIds(new Set([model.id]));
-            setAutoTestProgress((prev) => ({ ...prev, currentModelId: model.id }));
-          },
-          onResult: (entry) => {
-            setModelTestResults((prev) => ({ ...prev, [entry.id]: entry.status }));
-            setAutoTestProgress((prev) => ({
-              ...prev,
-              completed: prev.completed + 1,
-              passed: entry.status === "ok" ? prev.passed + 1 : prev.passed,
-              failed: entry.status === "error" ? prev.failed + 1 : prev.failed,
-            }));
-          },
-          onCancel: (results) => {
-            setAutoTestProgress((prev) => ({
-              ...prev,
-              completed: results.length,
-              passed: results.filter((entry) => entry.status === "ok").length,
-              failed: results.filter((entry) => entry.status === "error").length,
-              stopped: true,
-              currentModelId: null,
-            }));
-          },
-        },
-        controller.signal,
-      );
-
-      if (outcome.status === "complete") {
-        setAutoTestProgress((prev) => ({ ...prev, currentModelId: null }));
-      }
-    } finally {
-      if (autoTestAbortRef.current === controller) {
-        autoTestAbortRef.current = null;
-      }
-      setTestingModelIds(new Set());
-      setAutoTestingModels(false);
-    }
-  };
-
-  const handleStopAutoTestAvailableModels = () => {
-    autoTestAbortRef.current?.abort();
   };
 
   const renderModelsSection = () => {
@@ -1376,7 +1167,22 @@ export default function ProviderDetailPage() {
         />
       );
     }
-    const { displayModels, disabledDisplayModels, customModelRows } = getNonCompatibleLlmModelRows();
+    // Combine hardcoded models with Kilo free models (deduplicated)
+    // Exclude non-llm models (embedding, tts, etc.) — they have dedicated pages under media-providers
+    const allModels = [
+      ...models,
+      ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
+    ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; });
+    const disabledSet = new Set(disabledModelIds);
+    const displayModels = allModels.filter((m) => !disabledSet.has(m.id));
+    const disabledDisplayModels = allModels.filter((m) => disabledSet.has(m.id));
+    const customModelRows = getProviderCustomModelRows({
+      customModels,
+      modelAliases,
+      providerAlias: providerStorageAlias,
+      builtInModels: models,
+      type: "llm",
+    });
 
     return (
       <div className="flex flex-wrap gap-3">
@@ -1400,7 +1206,6 @@ export default function ProviderDetailPage() {
             testStatus={modelTestResults[model.id]}
             onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(model.id) : undefined}
             isTesting={testingModelIds.has(model.id)}
-            isTestDisabled={autoTestingModels}
             isCustom
             isFree={false}
             caps={getCaps(`${providerId}/${model.id}`)}
@@ -1427,7 +1232,6 @@ export default function ProviderDetailPage() {
               testStatus={modelTestResults[model.id]}
               onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(model.id) : undefined}
               isTesting={testingModelIds.has(model.id)}
-              isTestDisabled={autoTestingModels}
               isFree={model.isFree}
               onDisable={() => handleDisableModel(model.id)}
               caps={getCaps(`${providerId}/${model.id}`)}
@@ -1559,13 +1363,6 @@ export default function ProviderDetailPage() {
     }
     return getProviderIconSrc(providerInfo.id);
   };
-
-  const autoTestCurrentPosition = Math.min(autoTestProgress.completed + 1, autoTestProgress.total);
-  const autoTestProgressLabel = autoTestProgress.stopped
-    ? `Stopped after ${autoTestProgress.completed} of ${autoTestProgress.total}`
-    : autoTestingModels
-    ? `Testing ${autoTestCurrentPosition} of ${autoTestProgress.total}`
-    : `Completed ${autoTestProgress.completed} of ${autoTestProgress.total}`;
 
   return (
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:gap-8 sm:px-0">
@@ -1716,9 +1513,53 @@ export default function ProviderDetailPage() {
         <NoAuthProxyCard providerId={providerId} />
       ) : (
         <Card>
-          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="text-lg font-semibold">Connections</h2>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+              {connections.length > 0 && proxyPools.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon="lan"
+                  onClick={() => setShowBulkProxyModal(true)}
+                >
+                  Apply Proxy
+                </Button>
+              )}
+              {connections.length > 0 && (
+                <>
+                  {selectedConnectionIds.length > 0 && (
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      icon="delete"
+                      onClick={handleBulkDelete}
+                    >
+                      Delete Selected ({selectedConnectionIds.length})
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon="sync"
+                    onClick={handleRunOneByOneTest}
+                    disabled={oneByOneRunning}
+                  >
+                    {oneByOneRunning ? "Testing Connection One-by-One..." : "Test Connection One-by-One"}
+                  </Button>
+                  {oneByOneRunning && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon="stop"
+                      onClick={handleStopOneByOneTest}
+                      disabled={oneByOneStopping}
+                    >
+                      {oneByOneStopping ? "Stopping..." : "Stop"}
+                    </Button>
+                  )}
+                </>
+              )}
               {/* Round Robin toggle */}
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-text-muted font-medium">Round Robin</span>
@@ -1740,60 +1581,8 @@ export default function ProviderDetailPage() {
                   </div>
                 )}
               </div>
-              <div className="flex flex-wrap items-center gap-2 border-t border-black/[0.03] pt-2 dark:border-white/[0.03]">
-                <div>
-                  <span className="text-xs text-text-muted font-medium">Strict Model Assignment</span>
-                  <p className="text-[10px] text-text-muted">Only assigned accounts can serve each model for this provider.</p>
-                </div>
-                <Toggle checked={strictModelAssignment} onChange={handleStrictAssignmentToggle} />
-              </div>
             </div>
           </div>
-
-          {connections.length > 0 && (
-            <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-black/[0.03] pb-3 dark:border-white/[0.03]">
-              {proxyPools.length > 0 && (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  icon="lan"
-                  onClick={() => setShowBulkProxyModal(true)}
-                >
-                  Apply Proxy
-                </Button>
-              )}
-              {selectedConnectionIds.length > 0 && (
-                <Button
-                  size="sm"
-                  variant="danger"
-                  icon="delete"
-                  onClick={handleBulkDelete}
-                >
-                  Delete Selected ({selectedConnectionIds.length})
-                </Button>
-              )}
-              <Button
-                size="sm"
-                variant="secondary"
-                icon="sync"
-                onClick={handleRunOneByOneTest}
-                disabled={oneByOneRunning}
-              >
-                {oneByOneRunning ? "Testing Connection One-by-One..." : "Test Connection One-by-One"}
-              </Button>
-              {oneByOneRunning && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  icon="stop"
-                  onClick={handleStopOneByOneTest}
-                  disabled={oneByOneStopping}
-                >
-                  {oneByOneStopping ? "Stopping..." : "Stop"}
-                </Button>
-              )}
-            </div>
-          )}
 
           {connections.length === 0 ? (
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1868,13 +1657,15 @@ export default function ProviderDetailPage() {
               )}
               {connections.length > 0 && (
                 <div className="mb-3 flex items-center gap-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]">
-                  <Checkbox
-                    checked={allSelected}
-                    onChange={toggleSelectAllConnections}
-                    size="sm"
-                    label="Select All"
-                    className="text-xs text-text-muted hover:text-primary"
-                  />
+                  <label className="flex cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={toggleSelectAllConnections}
+                      className="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary"
+                    />
+                    Select All
+                  </label>
                 </div>
               )}
               {connectionsList}
@@ -1953,6 +1744,9 @@ export default function ProviderDetailPage() {
         </Card>
       )}
 
+      {/* Per-provider user overrides (custom headers / connect timeout) */}
+      <CustomConfigCard providerId={providerId} />
+
       {/* Models */}
       <Card>
         <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -1974,28 +1768,13 @@ export default function ProviderDetailPage() {
             )}
           </div>
           {!isCompatible && (() => {
-            const { displayModels, testableModels } = getNonCompatibleLlmModelRows();
-            const activeIds = displayModels.map((model) => model.id);
-            const canRunAutoTest = (connections.length > 0 || isFreeNoAuth) && testableModels.length > 0;
+            const allIds = [
+              ...models,
+              ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
+            ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; }).map((m) => m.id);
+            const activeIds = allIds.filter((id) => !disabledModelIds.includes(id));
             return (
-              <div className="flex flex-wrap gap-2">
-                {canRunAutoTest && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    icon="science"
-                    onClick={handleAutoTestAvailableModels}
-                    disabled={autoTestingModels || testingModelIds.size > 0}
-                    loading={autoTestingModels}
-                  >
-                    {autoTestingModels ? "Testing..." : "Auto Test All"}
-                  </Button>
-                )}
-                {autoTestingModels && (
-                  <Button size="sm" variant="secondary" icon="stop_circle" onClick={handleStopAutoTestAvailableModels}>
-                    Stop
-                  </Button>
-                )}
+              <div className="flex gap-2">
                 {disabledModelIds.length > 0 && (
                   <Button size="sm" variant="secondary" icon="restart_alt" onClick={handleEnableAll}>
                     Active All
@@ -2042,23 +1821,6 @@ export default function ProviderDetailPage() {
         {providerId === "zed" && !!liveModelsError && (
           <p className="text-xs text-red-500 mb-3 break-words">{liveModelsError}</p>
         )}
-        {!isCompatible && autoTestProgress.total > 0 && (
-          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs" role="status" aria-live="polite">
-            <span className="inline-flex items-center gap-1 font-semibold text-text-main">
-              <span className="material-symbols-outlined text-[16px]">
-                {autoTestProgress.stopped ? "stop_circle" : autoTestingModels ? "progress_activity" : "task_alt"}
-              </span>
-              {autoTestProgressLabel}
-            </span>
-            {autoTestProgress.currentModelId && (
-              <span className="min-w-0 truncate text-text-muted">
-                Current: <span className="font-mono text-text-main">{autoTestProgress.currentModelId}</span>
-              </span>
-            )}
-            <span className="text-green-600 dark:text-green-400">Passed: {autoTestProgress.passed}</span>
-            <span className="text-red-600 dark:text-red-400">Failed: {autoTestProgress.failed}</span>
-          </div>
-        )}
         {renderModelsSection()}
       </Card>
 
@@ -2075,6 +1837,13 @@ export default function ProviderDetailPage() {
       ) : providerId === "cursor" ? (
         <CursorAuthModal
           isOpen={showOAuthModal}
+          onSuccess={handleOAuthSuccess}
+          onClose={() => setShowOAuthModal(false)}
+        />
+      ) : providerId === "zed" ? (
+        <ZedAuthModal
+          isOpen={showOAuthModal}
+          providerInfo={providerInfo}
           onSuccess={handleOAuthSuccess}
           onClose={() => setShowOAuthModal(false)}
         />
@@ -2134,15 +1903,6 @@ export default function ProviderDetailPage() {
         onSave={handleUpdateConnection}
         onClose={() => setShowEditModal(false)}
       />
-
-      {/* Reveal & Copy API Key Modal */}
-      <RevealKeyModal
-        isOpen={!!revealTarget}
-        connection={revealTarget}
-        onClose={() => setRevealTarget(null)}
-        onSuccess={(message) => notify.success(message)}
-        onError={(message) => notify.error(message)}
-      />
       {isCompatible && (
         <EditCompatibleNodeModal
           isOpen={showEditNodeModal}
@@ -2157,8 +1917,10 @@ export default function ProviderDetailPage() {
           isOpen={showAddCustomModel}
           providerAlias={providerStorageAlias}
           providerDisplayAlias={providerDisplayAlias}
-          onSave={async (modelId, caps) => {
-            await handleAddCustomModel(modelId, "llm", providerStorageAlias, caps);
+          onSave={async (modelId, caps, transport) => {
+            // caps.stt is a UI-only flag; the API accepts transports only on
+            // type "stt" records, so the save derives the type from it.
+            await handleAddCustomModel(modelId, caps?.stt ? "stt" : "llm", providerStorageAlias, caps, transport);
             setShowAddCustomModel(false);
           }}
           onClose={() => setShowAddCustomModel(false)}
