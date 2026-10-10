@@ -105,24 +105,52 @@ jobs:
 
           # Regardless of which sync path above (fast-forward, already-up-to-date, or
           # diverged reset), master HEAD now points at upstream/master's tree —
-          # which lacks fork-only files like scripts/apply-custom-patches.mjs.
-          # The custom-patch step below needs that script.
+          # which lacks fork-only files that later steps need:
+          #   - scripts/apply-custom-patches.mjs  (regenerates custom-patch)
+          #   - scripts/verify-lockfile-npm10.mjs (docker-publish guard)
+          #   - scripts/build-win.mjs             (npm run build in Docker)
           #
           # After fast-forward / no-op sync, HEAD_REF already equals upstream/master,
           # so checking out from it gives us the same empty file. Source from
           # origin/sync-mibp instead — that branch always carries the fork's
           # accumulated content (it's where the rebrand, URL state persistence,
-          # and other custom commits live). The script content there is the same
-          # as on master before the reset.
-          if git cat-file -e "origin/sync-mibp:scripts/apply-custom-patches.mjs" 2>/dev/null; then
-            git checkout "origin/sync-mibp" -- scripts/apply-custom-patches.mjs
-            echo "Restored scripts/apply-custom-patches.mjs from origin/sync-mibp"
-          fi
+          # and other custom commits live).
+          #
+          # Restore EVERY fork-only file under scripts/ that exists on
+          # origin/sync-mibp but is missing here. Deliberately generic so new
+          # fork-only scripts are picked up automatically. Workflow files are
+          # excluded (they come from $HEAD_REF above; pushing them needs
+          # `workflows: write`).
+          FORK_FILES=$(git ls-tree -r --name-only origin/sync-mibp scripts/ 2>/dev/null || true)
+          for f in $FORK_FILES; do
+            case "$f" in
+              *.yml|*.yaml|.github/*) continue ;;
+            esac
+            if git cat-file -e "origin/sync-mibp:$f" 2>/dev/null && [ ! -f "$f" ]; then
+              git checkout "origin/sync-mibp" -- "$f"
+              echo "Restored $f from origin/sync-mibp"
+            fi
+          done
 
-          # Stage and commit the restored script so subsequent runs find it tracked.
-          git add scripts/apply-custom-patches.mjs 2>/dev/null || true
+          # Non-scripts fork-only files. Upstream does not track
+          # `package-lock.json`, but the fork's docker-publish.yml guard
+          # (`verify-lockfile-npm10.mjs`) needs it to exist and be npm-10
+          # compatible. Dockerfile is only restored if master lacks it (it
+          # normally has upstream's copy, which we keep).
+          for f in package-lock.json Dockerfile; do
+            if git cat-file -e "origin/sync-mibp:$f" 2>/dev/null && [ ! -f "$f" ]; then
+              git checkout "origin/sync-mibp" -- "$f"
+              echo "Restored $f from origin/sync-mibp"
+            fi
+          done
+
+          # Stage and commit the restored files so subsequent runs find them tracked.
+          # `-f` is required for package-lock.json: upstream's .gitignore ignores
+          # it, but the fork's Dockerfile (npm ci) and verify-lockfile guard need it.
+          git add scripts/ Dockerfile 2>/dev/null || true
+          git add -f package-lock.json 2>/dev/null || true
           if ! git diff --cached --quiet; then
-            git commit -m "chore(sync): re-apply fork-only script that upstream lacks" || true
+            git commit -m "chore(sync): re-apply fork-only scripts that upstream lacks" || true
           fi
 
           # 2) Regenerate custom-patch from the freshest master, then apply our patch script.
