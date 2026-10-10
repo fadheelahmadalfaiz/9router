@@ -1,16 +1,25 @@
 name: Sync MIBP
 
-# Keeps the `sync-mibp` branch up to date with its real upstream:
-#   mhiqrambg/9router-mibp-version (default branch: master)
+# Keeps the `sync-mibp` branch up to date with BOTH of its upstreams:
+#   - mhiqrambg/9router-mibp-version (default branch: master)  [fork base]
+#   - decolua/9router                (default branch: master)  [upstream features]
 #
-# NOTE: `sync-mibp` does NOT come from decolua/9router. It is a fork of
-# mhiqrambg/9router-mibp-version. Upstream tracking for decolua/9router is
-# handled separately by sync-upstream.yml (master + custom-patch).
+# `sync-mibp` is the UNION of the two repos: it carries every MIBP fork feature
+# AND every decolua upstream feature. The fork base (mibp) is merged first and
+# wins plain conflicts; decolua is merged second so its new features are additive.
+# Fork-only features are then re-protected by the guards further down
+# (workflow restore, preferredConnectionId guard, apply-custom-patches.mjs).
 #
 # What this workflow does, every hour:
-#   1. Merge mhiqrambg/9router-mibp-version@master into sync-mibp (-X theirs on conflict).
-#   2. Refresh npm dependencies inside their semver ranges (npm update) and commit the lockfile.
-#   3. Trigger the Docker image build from sync-mibp if anything changed.
+#   1. Merge mibp/master into sync-mibp (fork base; -X ours on conflict).
+#   2. Merge decolua/master into sync-mibp (upstream features; -X theirs on conflict).
+#   2b. Re-protect fork-only files/workflows + re-apply custom patches.
+#   3. Refresh npm dependencies inside their semver ranges (npm update) and commit the lockfile.
+#   4. Trigger the Docker image build from sync-mibp if anything changed.
+#
+# NOTE: decolua/9router is ALSO tracked on `master`/`custom-patch` by
+# sync-upstream.yml. That is intentional: `master` tracks decolua cleanly for
+# reference, while `sync-mibp` is the combined deployment branch.
 
 on:
   schedule:
@@ -31,8 +40,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # The real upstream for the sync-mibp branch.
+  # The fork base for the sync-mibp branch.
   MIBP_UPSTREAM: https://github.com/mhiqrambg/9router-mibp-version.git
+  # The decolua upstream whose features are unioned into sync-mibp.
+  DECOLUA_UPSTREAM: https://github.com/decolua/9router.git
   BRANCH: sync-mibp
 
 jobs:
@@ -54,7 +65,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Sync mibp upstream -> sync-mibp
+      - name: Sync mibp + decolua upstreams -> sync-mibp
         id: sync
         env:
           INPUT_SKIP_DEPS: ${{ inputs.skip_deps }}
@@ -65,41 +76,57 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git remote add mibp "$MIBP_UPSTREAM" || git remote set-url mibp "$MIBP_UPSTREAM"
+          git remote add decolua "$DECOLUA_UPSTREAM" || git remote set-url decolua "$DECOLUA_UPSTREAM"
           git fetch mibp master
+          git fetch decolua master
           git fetch origin "$BRANCH" || true
 
-          # 1) Bring the branch in line with upstream, preferring upstream on conflict.
+          # 1) Bring the branch in line with the fork base, preferring the fork
+          #    on plain conflicts so MIBP-only features are never silently lost.
           git checkout "$BRANCH"
           BEFORE_TREE=$(git rev-parse "HEAD^{tree}")
 
-          # Same content already? Skip the merge entirely to avoid empty merge commits.
           if git merge-base --is-ancestor "mibp/master" HEAD; then
             echo "Already up to date with mibp/master."
             NEEDS_FORCE=false
           elif git merge --ff-only "mibp/master"; then
             echo "Fast-forwarded $BRANCH to mibp/master"
             NEEDS_FORCE=false
-          elif git merge "mibp/master" --no-edit -X theirs; then
-            echo "Merged mibp/master into $BRANCH (theirs on conflict)"
+          elif git merge "mibp/master" --no-edit -X ours; then
+            echo "Merged mibp/master into $BRANCH (ours on conflict)"
             NEEDS_FORCE=false
           else
-            # Upstream rewrote history or has an intractable conflict: follow upstream.
+            # Fork base rewrote history or has an intractable conflict: follow it.
             echo "Merge failed; resetting $BRANCH to mibp/master (history rewrite)"
             git merge --abort 2>/dev/null || true
             git reset --hard "mibp/master"
             NEEDS_FORCE=true
           fi
 
-          # Abort if upstream ever introduces conflict markers.
+          # 1b) Union in the decolua upstream. -X theirs keeps decolua's new
+          #     features on additive conflicts; fork-only features are restored
+          #     by the guards below.
+          if git merge-base --is-ancestor "decolua/master" HEAD; then
+            echo "Already up to date with decolua/master."
+          elif git merge --ff-only "decolua/master"; then
+            echo "Fast-forwarded $BRANCH to decolua/master"
+          elif git merge "decolua/master" --no-edit -X theirs; then
+            echo "Merged decolua/master into $BRANCH (theirs on conflict)"
+          else
+            echo "::error::decolua/master merge failed with conflicts; leaving branch on mibp base only."
+            git merge --abort 2>/dev/null || true
+          fi
+
+          # Abort if a merge ever introduces conflict markers.
           if git grep -n -E '^(<<<<<<<|>>>>>>>) ' -- .; then
             echo "Conflict markers found after merge; aborting."
             exit 1
           fi
 
-          # 1b) Protect our own CI from upstream. mhiqrambg/9router-mibp-version
-          # does not carry these files, so a merge would DELETE sync-mibp.yml and
-          # sync-upstream.yml, and OVERWRITE docker-publish.yml with a variant that
-          # pushes to Docker Hub. Restore the pre-merge versions from BEFORE_REF.
+          # 1c) Protect our own CI. Neither upstream carries these fork workflows,
+          # so a merge would DELETE sync-mibp.yml and sync-upstream.yml, and
+          # OVERWRITE docker-publish.yml with a variant that pushes to Docker Hub.
+          # Restore the pre-merge versions from BEFORE_REF.
           git fetch origin "$BRANCH"
           BEFORE_REF=$(git rev-parse "origin/$BRANCH")
           for f in \
@@ -142,6 +169,19 @@ jobs:
           # If upstream deleted this file, drop the deletion so it stays on this branch.
           git diff --name-only --diff-filter=D HEAD | grep -E '^\.github/' || true
 
+          # 1d) Re-apply the fork's durable custom patches. The decolua merge can
+          # overwrite fork-branded files (provider page auto-test wiring, ModelRow
+          # disable support, IzRouter branding). apply-custom-patches.mjs restores
+          # them idempotently; it exits non-zero only if a required anchor is gone.
+          if [ -f scripts/apply-custom-patches.mjs ] && [ -f package.json ]; then
+            echo "::group::apply custom patches (fork features)"
+            npm install --no-audit --no-fund --ignore-scripts >/dev/null 2>&1 || true
+            node scripts/apply-custom-patches.mjs 2>&1 | tail -n 40
+            echo "::endgroup::"
+          else
+            echo "apply-custom-patches.mjs or package.json missing; skipping."
+          fi
+
           # 2) Refresh dependencies within their declared semver ranges.
           if [ "${INPUT_SKIP_DEPS:-false}" != "true" ] && [ -f package.json ]; then
             echo "::group::npm update (semver-safe)"
@@ -169,7 +209,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "Working tree clean after sync."
           else
-            git commit -m "chore(sync): merge mibp upstream + refresh dependencies"
+            git commit -m "chore(sync): merge mibp + decolua upstreams + refresh dependencies"
           fi
 
           # 4) Compare TREE hashes (content), not commit SHAs: a no-op merge
