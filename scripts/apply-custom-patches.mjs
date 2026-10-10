@@ -234,7 +234,7 @@ export {
 } from "./models.js";
 `;
 
-const colorsContents = `// 9Router color palette
+const colorsContents = `// IzRouter color palette
 // Light theme: warm neutral surfaces with citron primary
 // Dark theme: deep neutral surfaces with violet secondary accent
 
@@ -613,12 +613,15 @@ function patchBranding() {
   writeIfChanged(files.colors, colorsContents, 'restored citron/violet color constants');
 
   let globals = readRequired(files.globals);
-  globals = replaceRequiredPattern(
-    files.globals,
-    globals,
-    /\/\* ============================================================\r?\n   9Router palette[\s\S]*?\.dark \{[\s\S]*?\r?\n\}/,
+  // Idempotent: if the fork palette is already present (e.g. sync-mibp branch
+  // already carries it, or a previous run applied it), skip the replace.
+  if (!globals.includes("--color-brand-500: #c4bf1f;")) {
+    globals = replaceRequiredPattern(
+      files.globals,
+      globals,
+      /\/\* ============================================================\r?\n   (?:9Router|IzRouter) palette[\s\S]*?\.dark \{[\s\S]*?\r?\n\}/,
     `/* ============================================================
-   9Router palette - citron primary, violet companion accent,
+   IzRouter palette - citron primary, violet companion accent,
    neutral warm bases
    ============================================================ */
 :root {
@@ -758,9 +761,10 @@ function patchBranding() {
 
   color-scheme: dark;
 }`,
-    'restored citron/violet global palette',
-  );
-  writeIfChanged(files.globals, globals, 'restored citron/violet global palette');
+      'restored citron/violet global palette',
+    );
+    writeIfChanged(files.globals, globals, 'restored citron/violet global palette');
+  }
 
   assertContains(files.config, readRequired(files.config), 'name: "IzRouter Proxy"', 'IzRouter app name');
   assertContains(files.colors, readRequired(files.colors), '#c4bf1f', 'citron primary color');

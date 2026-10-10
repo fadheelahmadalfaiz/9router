@@ -30,7 +30,9 @@ describe("OAUTH_TEST_CONFIG — codebuddy-intl (#4232)", () => {
 
   it('"codebuddy-intl" has tokenExists: true', () => {
     // Match the specific entry: "codebuddy-intl": { tokenExists: true }
-    expect(src).toMatch(/"codebuddy-intl"\s*:\s*\{\s*tokenExists\s*:\s*true\s*\}/);
+    // MIBP fork: uses a richer Keycloak userinfo probe (buildUrl) instead of
+    // the plain tokenExists strategy — accept either form (AGENTS.md §4).
+    expect(src).toMatch(/"codebuddy-intl"\s*:\s*\{\s*(tokenExists\s*:\s*true|buildUrl\s*:)/);
   });
 
   it('"codebuddy-cn" still has tokenExists: true (regression guard)', () => {

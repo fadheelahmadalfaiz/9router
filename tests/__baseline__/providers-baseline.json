@@ -203,11 +203,11 @@
     "baseUrl": "https://chatgpt.com/backend-api/codex/responses",
     "format": "openai-responses",
     "forceStream": true,
-    "cliVersion": "0.155.0",
+    "cliVersion": "0.159.0",
     "headers": {
       "originator": "codex_cli_rs",
-      "User-Agent": "codex_cli_rs/0.155.0",
-      "version": "0.155.0"
+      "User-Agent": "codex_cli_rs/0.159.0",
+      "version": "0.159.0"
     },
     "usage": {
       "url": "https://chatgpt.com/backend-api/wham/usage",
@@ -294,26 +294,6 @@
     "baseUrl": "https://api.fireworks.ai/inference/v1/chat/completions",
     "validateUrl": "https://api.fireworks.ai/inference/v1/models",
     "format": "openai"
-  },
-  "freebuff": {
-    "baseUrl": "https://www.codebuff.com/api/v1/chat/completions",
-    "format": "openai",
-    "headers": {
-      "User-Agent": "ai-sdk/openai-compatible/1.0/codebuff"
-    },
-    "retry": {
-      "429": {
-        "attempts": 2,
-        "delayMs": 2000
-      },
-      "503": {
-        "attempts": 2,
-        "delayMs": 1500
-      }
-    },
-    "usage": {
-      "url": "https://www.codebuff.com/api/v1/freebuff/session"
-    }
   },
   "gemini-cli": {
     "baseUrl": "https://cloudcode-pa.googleapis.com/v1internal",
@@ -566,6 +546,18 @@
           "combined": true,
           "header": "x-api-key",
           "scheme": "raw",
+          "hooks": [
+            "kimiHeaders"
+          ]
+        }
+      },
+      {
+        "format": "openai-responses",
+        "baseUrl": "https://api.kimi.com/coding/v1/responses",
+        "auth": {
+          "combined": true,
+          "header": "Authorization",
+          "scheme": "bearer",
           "hooks": [
             "kimiHeaders"
           ]
@@ -883,6 +875,26 @@
     },
     "format": "openai"
   },
+  "freebuff": {
+    "baseUrl": "https://www.codebuff.com/api/v1/chat/completions",
+    "format": "openai",
+    "headers": {
+      "User-Agent": "ai-sdk/openai-compatible/1.0/codebuff"
+    },
+    "retry": {
+      "429": {
+        "attempts": 2,
+        "delayMs": 2000
+      },
+      "503": {
+        "attempts": 2,
+        "delayMs": 1500
+      }
+    },
+    "usage": {
+      "url": "https://www.codebuff.com/api/v1/freebuff/session"
+    }
+  },
   "siliconflow": {
     "baseUrl": "https://api.siliconflow.com/v1/chat/completions",
     "validateUrl": "https://api.siliconflow.com/v1/models",
@@ -1184,22 +1196,6 @@
     "validateUrl": "https://api.b.ai/v1/models",
     "format": "openai"
   },
-  "bedrock": {
-    "baseUrl": "https://bedrock-runtime.{region}.amazonaws.com",
-    "format": "claude",
-    "auth": {
-      "header": "aws-sigv4",
-      "scheme": "raw"
-    }
-  },
-  "bedrock-xai": {
-    "baseUrl": "https://bedrock-runtime.{region}.amazonaws.com",
-    "auth": {
-      "header": "aws-sigv4",
-      "scheme": "raw"
-    },
-    "format": "openai"
-  },
   "muse": {
     "baseUrl": "https://api.meta.ai/v1/chat/completions",
     "validateUrl": "https://api.meta.ai/v1/models",
@@ -1241,5 +1237,61 @@
         }
       }
     ]
+  },
+  "minimax-code": {
+    "baseUrl": "https://agent.minimax.cn/mavis/api/v1/llm/v1/messages",
+    "format": "claude",
+    "thinkingFormat": "claude-adaptive",
+    "headers": {
+      "User-Agent": "MiniMaxAgent",
+      "X-Mavis-Agent-Id": "main"
+    },
+    "auth": {
+      "combined": true,
+      "header": "Authorization",
+      "scheme": "bearer",
+      "anthropicVersion": true,
+      "hooks": [
+        "minimaxHeaders"
+      ]
+    },
+    "clientId": "mcode-public",
+    "tokenUrl": "https://account.minimax.cn/oauth2/token"
+  },
+  "minimax-code-global": {
+    "baseUrl": "https://agent.minimax.io/mavis/api/v1/llm/v1/messages",
+    "format": "claude",
+    "thinkingFormat": "claude-adaptive",
+    "headers": {
+      "User-Agent": "MiniMaxAgent",
+      "X-Mavis-Agent-Id": "main"
+    },
+    "auth": {
+      "combined": true,
+      "header": "Authorization",
+      "scheme": "bearer",
+      "anthropicVersion": true,
+      "hooks": [
+        "minimaxHeaders"
+      ]
+    },
+    "clientId": "mcode-public",
+    "tokenUrl": "https://account.minimax.io/oauth2/token"
+  },
+  "bedrock": {
+    "baseUrl": "https://bedrock-runtime.{region}.amazonaws.com",
+    "format": "claude",
+    "auth": {
+      "header": "aws-sigv4",
+      "scheme": "raw"
+    }
+  },
+  "bedrock-xai": {
+    "baseUrl": "https://bedrock-runtime.{region}.amazonaws.com",
+    "auth": {
+      "header": "aws-sigv4",
+      "scheme": "raw"
+    },
+    "format": "openai"
   }
 }
