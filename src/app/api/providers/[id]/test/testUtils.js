@@ -22,7 +22,6 @@ import {
   KIMCHI_CONFIG,
 } from "@/lib/oauth/constants/oauth";
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
-import { decodeJwtPayload } from "@/lib/oauth/providerHelpers";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
