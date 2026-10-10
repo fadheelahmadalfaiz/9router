@@ -14,6 +14,8 @@ name: Sync MIBP
 #   1. Merge mibp/master into sync-mibp (fork base; -X ours on conflict).
 #   2. Merge decolua/master into sync-mibp (upstream features; -X theirs on conflict).
 #   2b. Re-protect fork-only files/workflows + re-apply custom patches.
+#   2c. Guard fork features lost by `-X theirs` (guard-fork-features.mjs) and fail
+#       the job if any could not be restored — never push a broken union.
 #   3. Refresh npm dependencies inside their semver ranges (npm update) and commit the lockfile.
 #   4. Trigger the Docker image build from sync-mibp if anything changed.
 #
@@ -182,6 +184,20 @@ jobs:
             echo "apply-custom-patches.mjs or package.json missing; skipping."
           fi
 
+          # 1e) Union guard: `-X theirs` takes decolua's WHOLE blob for files both
+          #     sides edited, so fork snippets in those files vanish silently (the
+          #     merge still exits 0 with no conflict markers). guard-fork-features.mjs
+          #     re-inserts each known fork-only line (FREEBUFF_CONFIG, freebuff in
+          #     the OAuth route list, the DonateModal wiring in Header.js) only when
+          #     missing, so decolua's new additions in the same file survive too.
+          if [ -f scripts/guard-fork-features.mjs ]; then
+            echo "::group::guard fork features lost by -X theirs"
+            node scripts/guard-fork-features.mjs 2>&1
+            echo "::endgroup::"
+          else
+            echo "::warning::scripts/guard-fork-features.mjs missing; skipping fork-feature guard."
+          fi
+
           # 2) Refresh dependencies within their declared semver ranges.
           if [ "${INPUT_SKIP_DEPS:-false}" != "true" ] && [ -f package.json ]; then
             echo "::group::npm update (semver-safe)"
@@ -203,6 +219,16 @@ jobs:
             fi
           fi
           node --check "$CHAT" 2>&1 || { echo "::error::$CHAT failed syntax check"; exit 1; }
+
+          # 2c) Hard gate: every fork feature must survive the union. If the guard
+          #     in step 1e could not repair a missing snippet, fail loudly instead
+          #     of pushing a branch that silently dropped a fork feature.
+          if [ -f scripts/guard-fork-features.mjs ]; then
+            if ! node scripts/guard-fork-features.mjs --check; then
+              echo "::error::sync-mibp lost one or more fork features after the merge. Refusing to push."
+              exit 1
+            fi
+          fi
 
           # 3) Commit only when the working tree actually changed.
           git add -A
