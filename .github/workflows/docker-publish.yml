@@ -51,6 +51,39 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Optional Docker Hub login: anonymous pulls of the pinned `node:22-alpine`
+      # base image hit the 100/6h per-IP limit on shared runner IPs ("429 Too
+      # Many Requests"). Authenticating raises it to 200/6h. Skipped when the
+      # secrets are absent so forks keep working.
+      - name: Log in to Docker Hub (optional)
+        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      # Pre-pull the pinned base image with retries/backoff to ride out
+      # transient Docker Hub rate limiting before buildx runs.
+      - name: Pre-pull base image (retry on rate limit)
+        run: |
+          set -euo pipefail
+          BASE_IMAGE="${{ vars.NODE_BASE_IMAGE || 'node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32' }}"
+          for attempt in 1 2 3 4 5; do
+            echo "docker pull attempt ${attempt}: ${BASE_IMAGE}"
+            if docker pull "${BASE_IMAGE}"; then
+              echo "Base image pulled successfully."
+              exit 0
+            fi
+            echo "Pull failed (attempt ${attempt}); backing off $((attempt * 15))s..."
+            sleep $((attempt * 15))
+          done
+          echo "::error::Failed to pull ${BASE_IMAGE} after 5 attempts (likely Docker Hub rate limit)."
+          exit 1
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6

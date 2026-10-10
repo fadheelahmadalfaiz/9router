@@ -825,10 +825,102 @@ function createInitialModelAutoTestProgress() {
     'added auto-test state',
   );
 
-  source = replaceRequiredLiteralIfMissing(
-    files.providerPage,
-    source,
-    `    const customModelRows = getProviderCustomModelRows({
+  // Upstream refactored `renderModelsSection` (newer versions inline the model
+  // list logic directly instead of a `getNonCompatibleLlmModelRows()` helper).
+  // Two possible shapes are supported:
+  //
+  //  (A) OLD: a `getNonCompatibleLlmModelRows` helper returns the object and
+  //      `renderModelsSection` destructures it.  -> just add testableModels.
+  //
+  //  (B) NEW: the logic lives inline inside `renderModelsSection`:
+  //        const allModels = [...];
+  //        const disabledSet = ...;
+  //        const displayModels = ...;
+  //        const disabledDisplayModels = ...;
+  //        const customModelRows = getProviderCustomModelRows({...});
+  //
+  //        return (
+  //      In this case we (re)introduce a helper that returns the same object --
+  //      including testableModels -- and make renderModelsSection call it. This
+  //      keeps every downstream patch (which expects `getNonCompatibleLlmModelRows`)
+  //      working unchanged.
+  //
+  // Idempotency: if the required needle is already present we skip entirely.
+
+  const helperNeedle = 'return { displayModels, disabledDisplayModels, customModelRows, testableModels };';
+
+  if (!source.includes(helperNeedle)) {
+    // ---- Shape (B): new inline structure -------------------------------------
+    const NEW_INLINE_BLOCK =
+`    const allModels = [
+      ...models,
+      ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
+    ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; });
+    const disabledSet = new Set(disabledModelIds);
+    const displayModels = allModels.filter((m) => !disabledSet.has(m.id));
+    const disabledDisplayModels = allModels.filter((m) => disabledSet.has(m.id));
+    const customModelRows = getProviderCustomModelRows({
+      customModels,
+      modelAliases,
+      providerAlias: providerStorageAlias,
+      builtInModels: models,
+      type: "llm",
+    });
+
+    return (
+`;
+    const NEW_INLINE_REPLACEMENT =
+`    const { displayModels, disabledDisplayModels, customModelRows } = getNonCompatibleLlmModelRows();
+
+    return (
+`;
+
+    if (source.includes(NEW_INLINE_BLOCK)) {
+      // 1) Replace the inline block inside renderModelsSection with a helper call.
+      source = replaceAllLiteral(source, NEW_INLINE_BLOCK, NEW_INLINE_REPLACEMENT);
+
+      // 2) Inject the helper right before `const renderModelsSection = () => {`.
+      const HELPER = `  const getNonCompatibleLlmModelRows = () => {
+    const allModels = [
+      ...models,
+      ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
+    ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; });
+    const disabledSet = new Set(disabledModelIds);
+    const displayModels = allModels.filter((m) => !disabledSet.has(m.id));
+    const disabledDisplayModels = allModels.filter((m) => disabledSet.has(m.id));
+    const customModelRows = getProviderCustomModelRows({
+      customModels,
+      modelAliases,
+      providerAlias: providerStorageAlias,
+      builtInModels: models,
+      type: "llm",
+    });
+    const testableModels = [];
+    const seenIds = new Set();
+
+    for (const model of [...customModelRows, ...displayModels]) {
+      if (!model.id || seenIds.has(model.id)) continue;
+      seenIds.add(model.id);
+      testableModels.push({ id: model.id });
+    }
+
+    return { displayModels, disabledDisplayModels, customModelRows, testableModels };
+  };
+
+`;
+      const sectionAnchor = '  const renderModelsSection = () => {\n';
+      if (!source.includes(sectionAnchor)) {
+        console.error(`Missing expected anchor in ${files.providerPage}: renderModelsSection declaration`);
+        process.exit(1);
+      }
+      source = replaceAllLiteral(source, sectionAnchor, HELPER + sectionAnchor);
+      console.log('Applied custom patch: added testable model list (inline->helper refactor).');
+    } else {
+      // ---- Shape (A): old helper structure -----------------------------------
+      source = replaceRequiredLiteralIfMissing(
+        files.providerPage,
+        source,
+        `    const customModelRows = getProviderCustomModelRows({
       customModels,
       modelAliases,
       providerAlias: providerStorageAlias,
@@ -838,7 +930,7 @@ function createInitialModelAutoTestProgress() {
 
     return { displayModels, disabledDisplayModels, customModelRows };
 `,
-    `    const customModelRows = getProviderCustomModelRows({
+        `    const customModelRows = getProviderCustomModelRows({
       customModels,
       modelAliases,
       providerAlias: providerStorageAlias,
@@ -856,9 +948,11 @@ function createInitialModelAutoTestProgress() {
 
     return { displayModels, disabledDisplayModels, customModelRows, testableModels };
 `,
-    'return { displayModels, disabledDisplayModels, customModelRows, testableModels };',
-    'added testable model list',
-  );
+        helperNeedle,
+        'added testable model list',
+      );
+    }
+  }
 
   source = replaceRequiredLiteralIfMissing(
     files.providerPage,
@@ -997,22 +1091,12 @@ function createInitialModelAutoTestProgress() {
     'added auto-test progress label',
   );
 
-  source = replaceRequiredLiteral(
-    files.providerPage,
-    source,
-    `          {!isCompatible && (() => {
-            const { displayModels } = getNonCompatibleLlmModelRows();
-            const activeIds = displayModels.map((model) => model.id);
-            return (
-              <div className="flex flex-wrap gap-2">
-`,
-    `          {!isCompatible && (() => {
-            const { displayModels, testableModels } = getNonCompatibleLlmModelRows();
-            const activeIds = displayModels.map((model) => model.id);
-            const canRunAutoTest = (connections.length > 0 || isFreeNoAuth) && testableModels.length > 0;
-            return (
-              <div className="flex flex-wrap gap-2">
-                {canRunAutoTest && (
+  // "Auto Test All" button. Two upstream shapes again:
+  //  (A) OLD: const { displayModels } = getNonCompatibleLlmModelRows(); ... gap-2
+  //  (B) NEW: const allIds = [...]; const activeIds = allIds.filter(...); ... gap-2
+  // Detect whichever shape is present and inject the Auto Test All buttons.
+  if (!source.includes('const canRunAutoTest = (connections.length > 0 || isFreeNoAuth) && testableModels.length > 0;')) {
+    const AUTO_TEST_BUTTONS = `                {canRunAutoTest && (
                   <Button
                     size="sm"
                     variant="secondary"
@@ -1029,22 +1113,72 @@ function createInitialModelAutoTestProgress() {
                     Stop
                   </Button>
                 )}
-`,
-    'added Auto Test All button',
-  );
+`;
 
-  source = replaceRequiredLiteral(
-    files.providerPage,
-    source,
-    `        {!!modelsTestError && (
-          <p className="text-xs text-red-500 mb-3 break-words">{modelsTestError}</p>
-        )}
-        {renderModelsSection()}
-`,
-    `        {!!modelsTestError && (
-          <p className="text-xs text-red-500 mb-3 break-words">{modelsTestError}</p>
-        )}
-        {!isCompatible && autoTestProgress.total > 0 && (
+    const OLD_BLOCK = `          {!isCompatible && (() => {
+            const { displayModels } = getNonCompatibleLlmModelRows();
+            const activeIds = displayModels.map((model) => model.id);
+            return (
+              <div className="flex flex-wrap gap-2">
+`;
+    const NEW_BLOCK = `          {!isCompatible && (() => {
+            const { displayModels, testableModels } = getNonCompatibleLlmModelRows();
+            const activeIds = displayModels.map((model) => model.id);
+            const canRunAutoTest = (connections.length > 0 || isFreeNoAuth) && testableModels.length > 0;
+            return (
+              <div className="flex flex-wrap gap-2">
+`;
+
+    if (source.includes(OLD_BLOCK)) {
+      source = replaceAllLiteral(source, OLD_BLOCK, NEW_BLOCK);
+      console.log('Applied custom patch: added Auto Test All button.');
+    } else {
+      // Shape (B): inline allIds/activeIds inside render area.
+      const OLD_INLINE = `          {!isCompatible && (() => {
+            const allIds = [
+              ...models,
+              ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
+            ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; }).map((m) => m.id);
+            const activeIds = allIds.filter((id) => !disabledModelIds.includes(id));
+            return (
+`;
+      const NEW_INLINE = `          {!isCompatible && (() => {
+            const { testableModels } = getNonCompatibleLlmModelRows();
+            const allIds = [
+              ...models,
+              ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
+            ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; }).map((m) => m.id);
+            const activeIds = allIds.filter((id) => !disabledModelIds.includes(id));
+            const canRunAutoTest = (connections.length > 0 || isFreeNoAuth) && testableModels.length > 0;
+            return (
+`;
+      if (!source.includes(OLD_INLINE)) {
+        console.error(`Missing expected anchor in ${files.providerPage}: added Auto Test All button`);
+        process.exit(1);
+      }
+      source = replaceAllLiteral(source, OLD_INLINE, NEW_INLINE);
+
+      // The inline shape uses `<div className="flex gap-2">` (not "flex-wrap").
+      // Insert the buttons as the first children of that div.
+      const INLINE_DIV = `              <div className="flex gap-2">
+                {disabledModelIds.length > 0 && (
+`;
+      const INLINE_DIV_REPLACEMENT = `              <div className="flex flex-wrap gap-2">
+${AUTO_TEST_BUTTONS}                {disabledModelIds.length > 0 && (
+`;
+      if (!source.includes(INLINE_DIV)) {
+        console.error(`Missing expected anchor in ${files.providerPage}: added Auto Test All button (inline div)`);
+        process.exit(1);
+      }
+      source = replaceAllLiteral(source, INLINE_DIV, INLINE_DIV_REPLACEMENT);
+      console.log('Applied custom patch: added Auto Test All button (inline).');
+    }
+  }
+
+  // Auto-test progress UI: insert the status bar right before renderModelsSection().
+  // Anchor on the stable `{renderModelsSection()}` call (the surrounding
+  // modelsTestError markup varies between upstream versions).
+  const PROGRESS_UI = `        {!isCompatible && autoTestProgress.total > 0 && (
           <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs" role="status" aria-live="polite">
             <span className="inline-flex items-center gap-1 font-semibold text-text-main">
               <span className="material-symbols-outlined text-[16px]">
@@ -1061,10 +1195,17 @@ function createInitialModelAutoTestProgress() {
             <span className="text-red-600 dark:text-red-400">Failed: {autoTestProgress.failed}</span>
           </div>
         )}
-        {renderModelsSection()}
-`,
-    'added auto-test progress UI',
-  );
+`;
+  const progressNeedle = 'role="status" aria-live="polite"';
+  if (!source.includes(progressNeedle)) {
+    const RENDER_CALL = '        {renderModelsSection()}\n';
+    if (!source.includes(RENDER_CALL)) {
+      console.error(`Missing expected anchor in ${files.providerPage}: added auto-test progress UI`);
+      process.exit(1);
+    }
+    source = replaceAllLiteral(source, RENDER_CALL, PROGRESS_UI + RENDER_CALL);
+    console.log('Applied custom patch: added auto-test progress UI.');
+  }
 
   writeIfChanged(files.providerPage, source, 'restored Auto Test All provider page wiring');
 
