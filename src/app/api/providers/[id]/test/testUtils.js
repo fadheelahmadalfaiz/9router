@@ -103,7 +103,7 @@ const OAUTH_TEST_CONFIG = {
     authPrefix: "Bearer ",
   },
   "codebuddy-cn": { tokenExists: true },
-  // GUARD - DO NOT REMOVE. See AGENTS.md §4. Without this entry, Test Connection
+  // GUARD — DO NOT REMOVE. See AGENTS.md §4. Without this entry, Test Connection
   // returns "Provider test not supported". codebuddy-intl access tokens are
   // Keycloak JWTs (iss .../auth/realms/copilot); probe the realm's userinfo
   // endpoint so a revoked/expired token is caught. Derive the realm URL from the

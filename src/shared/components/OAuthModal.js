@@ -26,6 +26,10 @@ const DEVICE_CODE_PROVIDERS = [
   "minimax-code",
   "minimax-code-global",
   "freebuff",
+  "muse",
+  "glm",
+  "minimax-code",
+  "minimax-code-global",
 ];
 
 const oauthProxyPoolStorageKey = (providerId) => `9router.oauthProxyPool.${providerId}`;
@@ -1094,19 +1098,22 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
                   </Button>
                 </div>
               </div>
+              {/* Some flows (codebuddy-cn/intl, sometimes freebuff) carry no
+                  user code — auth happens purely via the login URL + state.
+                  Hide the box instead of showing an empty one. */}
               {deviceData.user_code && (
-                <div className="bg-primary/10 p-4 rounded-lg">
-                  <p className="text-xs text-text-muted mb-1">Your Code</p>
-                  <div className="flex items-center justify-center gap-2">
-                    <p className="text-2xl font-mono font-bold text-primary">{deviceData.user_code}</p>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      icon={copied === "user_code" ? "check" : "content_copy"}
-                      onClick={() => copy(deviceData.user_code, "user_code")}
-                    />
-                  </div>
+              <div className="bg-primary/10 p-4 rounded-lg">
+                <p className="text-xs text-text-muted mb-1">Your Code</p>
+                <div className="flex items-center justify-center gap-2">
+                  <p className="text-2xl font-mono font-bold text-primary">{deviceData.user_code}</p>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={copied === "user_code" ? "check" : "content_copy"}
+                    onClick={() => copy(deviceData.user_code, "user_code")}
+                  />
                 </div>
+              </div>
               )}
             </div>
             {polling && (
