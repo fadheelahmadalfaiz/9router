@@ -98,15 +98,51 @@ const GUARDS = [
         matchIndent: true,
       },
       {
-        label: "DonateModal render element",
-        requires: ["<DonateModal isOpen={donateOpen}"],
-        snippet: [
-          "      <DonateModal isOpen={donateOpen} onClose={() => setDonateOpen(false)} />",
+        // The right-actions cluster differs STRUCTURALLY between the two sides:
+        //   mibp    : <a href="...mhiqrambg...">code / MIBP Edition</a>
+        //   decolua : <button onClick={setDonateOpen}>volunteer_activism / Donate</button> + <DonateModal/>
+        // -X ours/-X theirs can interleave the two into a tag-mismatched mess
+        // (<a ...> ... </button>), which fails the JSX parse. When that happens,
+        // replace the whole cluster with the canonical UNION of both sides.
+        label: "right-actions cluster (MIBP link + Donate button + modal)",
+        requires: [
+          'aria-label="MIBP Edition"',
+          'aria-label="Donate"',
+          "<DonateModal isOpen={donateOpen}",
         ],
-        // Insert just before the closing </header> so it sits as the last child.
-        insertBeforeAnchor: "</header>",
-        noBlankBefore: true,
-        matchIndent: false,
+        // Detect the corruption precisely: an <a ...> element whose body
+        // contains volunteer_activism, or an <a ...> closed by </button>.
+        // In the correct union the <a> body holds only `code`/`MIBP Edition`.
+        detectCorrupt: /<a\b(?:(?!<\/a>)[^])*?(?:volunteer_activism|<\/button>)/,
+        replaceBetween: {
+          start: "        <HeaderSearch />\n",
+          end: "\n      <DonateModal isOpen={donateOpen}",
+        },
+        snippet: [
+          "        <HeaderSearch />",
+          '        <a',
+          '          href="https://github.com/mhiqrambg/9router-mibp-version"',
+          '          target="_blank"',
+          '          rel="noreferrer"',
+          '          className="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors text-sm font-medium"',
+          '          aria-label="MIBP Edition"',
+          "        >",
+          '          <span className="material-symbols-outlined text-[18px]">code</span>',
+          '          <span className="hidden sm:inline">MIBP Edition</span>',
+          "        </a>",
+          "        <button",
+          "          onClick={() => setDonateOpen(true)}",
+          '          className="hidden sm:flex items-center gap-1.5 px-3 h-8 rounded-lg border border-pink-500/30 bg-pink-500/10 text-pink-600 dark:text-pink-400 hover:bg-pink-500/20 transition-colors text-sm font-medium"',
+          '          aria-label="Donate"',
+          "        >",
+          '          <span className="material-symbols-outlined text-[18px]">volunteer_activism</span>',
+          '          <span className="hidden sm:inline">Donate</span>',
+          "        </button>",
+          "        <ThemeToggle />",
+          "        <HeaderLanguage />",
+          "        <HeaderMenu onLogout={handleLogout} />",
+          "      </div>",
+        ],
       },
     ],
   },
@@ -154,6 +190,20 @@ function insertBeforeLine(text, anchorLine, snippetLines, noBlankBefore = false,
   return lines.join("\n");
 }
 
+/**
+ * Replace everything from the first `start` anchor (INCLUSIVE) up to (exclusive)
+ * the first `end` anchor that follows it, with `snippetLines`. Used to rebuild a
+ * whole JSX cluster when a merge interleaves two incompatible structures.
+ */
+function replaceBetweenAnchors(text, startAnchor, endAnchor, snippetLines) {
+  const startIdx = text.indexOf(startAnchor);
+  if (startIdx === -1) return null;
+  const afterStart = startIdx + startAnchor.length;
+  const endIdx = text.indexOf(endAnchor, afterStart);
+  if (endIdx === -1) return null;
+  return text.slice(0, startIdx) + snippetLines.join("\n") + text.slice(endIdx);
+}
+
 let failed = 0;
 let patched = 0;
 
@@ -168,17 +218,29 @@ for (const g of GUARDS) {
   let filePatched = false;
 
   for (const part of g.parts) {
-    if (hasAny(text, part.requires)) {
+    // A part with `detectCorrupt` is satisfied only if all `requires` markers
+    // exist AND the corruption regex does NOT match.
+    const corrupt = part.detectCorrupt ? part.detectCorrupt.test(text) : false;
+    if (!corrupt && hasAny(text, part.requires)) {
       console.log(`OK    ${g.file}: ${part.label}`);
       continue;
     }
     if (CHECK_ONLY) {
-      console.error(`::error::guard(MISSING) ${g.file}: ${part.label}`);
+      console.error(
+        `::error::guard(${corrupt ? "CORRUPT" : "MISSING"}) ${g.file}: ${part.label}`,
+      );
       failed++;
       continue;
     }
     let repaired = null;
-    if (part.insertBeforeAnchor) {
+    if (part.replaceBetween) {
+      repaired = replaceBetweenAnchors(
+        text,
+        part.replaceBetween.start,
+        part.replaceBetween.end,
+        part.snippet,
+      );
+    } else if (part.insertBeforeAnchor) {
       repaired = insertBeforeLine(
         text,
         part.insertBeforeAnchor,
@@ -199,14 +261,15 @@ for (const g of GUARDS) {
     if (repaired === null) {
       repaired = text.replace(/\n?$/, "\n") + "\n" + part.snippet.join("\n") + "\n";
     }
-    if (repaired === null || !hasAny(repaired, part.requires)) {
+    const stillCorrupt = part.detectCorrupt ? part.detectCorrupt.test(repaired) : false;
+    if (repaired === null || stillCorrupt || !hasAny(repaired, part.requires)) {
       console.error(`::error::guard(UNREPAIRABLE) ${g.file}: ${part.label}`);
       failed++;
       continue;
     }
     text = repaired;
     filePatched = true;
-    console.log(`FIXED ${g.file}: re-inserted ${part.label}`);
+    console.log(`FIXED ${g.file}: repaired ${part.label}`);
   }
 
   if (filePatched) {
