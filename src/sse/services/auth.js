@@ -123,7 +123,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           proxyPoolId: resolvedProxy.proxyPoolId || null,
           strictProxy: resolvedProxy.strictProxy === true,
           // Let chatCore's pool-scoped retry rotate across the same candidate
-          // pool set (excluding the failed pool) instead of reusing it — this
+          // pool set (excluding the failed pool) instead of reusing it - this
           // is what makes per-IP limit retries work for no-auth providers.
           proxyPoolIds: poolIds,
           proxyRotationStrategy: strategy,
