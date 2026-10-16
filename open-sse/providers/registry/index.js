@@ -124,7 +124,6 @@ import p118 from "./selfhosted-embedding.js";
 import p119 from "./fish-audio.js";
 import p120 from "./alitp-intl.js";
 import p121 from "./xquik.js";
-import p122 from "./ollama-search.js";
 import p125 from "./tokenharbor.js";
 import p126 from "./dahl.js";
 import p127 from "./atria.js";
@@ -263,7 +262,6 @@ export default [
   p119,
   p120,
   p121,
-  p122,
   p125,
   p126,
   p127,
