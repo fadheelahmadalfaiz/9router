@@ -2,7 +2,7 @@ import pkg from "../../../package.json" with { type: "json" };
 
 // App configuration
 export const APP_CONFIG = {
-  name: "9Router Proxy",
+  name: "IzRouter Proxy",
   description: "AI Infrastructure Management",
   version: pkg.version,
 };
@@ -83,8 +83,8 @@ export const QUOTA_AUTOPING_CONFIG = {
       resetAtDriftMs: 30000,
       minPingIntervalMs: 600000,
       skipWhenBlockingQuotaExhausted: true,
-      // gpt-5.6-terra is the lightweight model for auto-pinging Codex 5h reset window.
-      pingModel: "gpt-5.6-terra",
+      // Free and Plus Codex accounts both expose gpt-5.5; avoid fallback probes that waste requests.
+      pingModel: "gpt-5.5",
       pingText: "hi",
       pingInstructions: "Reply with OK.",
       pingReasoningEffort: "none",

@@ -1,14 +1,23 @@
-// Claude-inspired color palette for Endpoint Proxy
-// Light theme: Warm beige/cream tones
-// Dark theme: Deep charcoal/brown tones
+// IzRouter color palette
+// Light theme: warm neutral surfaces with citron primary
+// Dark theme: deep neutral surfaces with violet secondary accent
 
 export const COLORS = {
-  // Primary - Warm Coral/Terracotta (Claude-like)
+  // Primary - citron (#c4bf1f)
   primary: {
-    DEFAULT: "#D97757",
-    hover: "#C56243",
-    light: "#E8A58C",
-    dark: "#B0664D",
+    DEFAULT: "#c4bf1f",
+    hover: "#9d9919",
+    light: "#d9d23c",
+    dark: "#4f4d0d",
+  },
+
+  // Secondary - violet companion with accessible contrast
+  secondary: {
+    DEFAULT: "#2b245e",
+    hover: "#423883",
+    light: "#8c7cf7",
+    lightHover: "#b8afff",
+    dark: "#1d1845",
   },
 
   // Light theme backgrounds
@@ -55,6 +64,8 @@ export const CSS_VARIABLES = {
   light: {
     "--color-primary": COLORS.primary.DEFAULT,
     "--color-primary-hover": COLORS.primary.hover,
+    "--color-secondary": COLORS.secondary.DEFAULT,
+    "--color-secondary-hover": COLORS.secondary.hover,
     "--color-bg": COLORS.light.bg,
     "--color-bg-alt": COLORS.light.bgAlt,
     "--color-surface": COLORS.light.surface,
@@ -65,7 +76,9 @@ export const CSS_VARIABLES = {
   },
   dark: {
     "--color-primary": COLORS.primary.DEFAULT,
-    "--color-primary-hover": COLORS.primary.hover,
+    "--color-primary-hover": COLORS.primary.light,
+    "--color-secondary": COLORS.secondary.light,
+    "--color-secondary-hover": COLORS.secondary.lightHover,
     "--color-bg": COLORS.dark.bg,
     "--color-bg-alt": COLORS.dark.bgAlt,
     "--color-surface": COLORS.dark.surface,
