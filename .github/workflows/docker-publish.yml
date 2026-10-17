@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - "v*"
+    # Any commit landing on master (a manual feature commit, or the hourly
+    # sync's merge commit) must rebuild the image. Without this, a hand-pushed
+    # feature sits on master but never reaches the published image, because the
+    # sync workflow only builds when IT changed the tree -- a manual commit is
+    # already in BEFORE_TREE, so it reports "no content changes" and skips.
+    branches:
+      - master
   workflow_dispatch:
     inputs:
       ref:
