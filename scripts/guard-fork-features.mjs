@@ -246,6 +246,26 @@ const GUARDS = [
       },
     ],
   },
+  {
+    // Fork-only bulk activate/deactivate for the selected connections. decolua's
+    // provider page has per-row toggles only, so `-X theirs` reverts the file and
+    // drops the bulk handler + its two buttons. Structural (state hook + handler
+    // + JSX), so detect-and-fail only: a line-level repair would leave a
+    // half-wired button that silently does nothing.
+    file: "src/app/(dashboard)/dashboard/providers/[id]/page.js",
+    parts: [
+      {
+        label: "bulk activate/deactivate selected connections",
+        detectOnly: true,
+        requiresAll: [
+          "handleBulkUpdateStatus",
+          "setBulkUpdatingStatus",
+          "bulkUpdatingStatus",
+        ],
+        minCount: { needle: "handleBulkUpdateStatus", min: 3 },
+      },
+    ],
+  },
 ];
 
 function readFile(rel) {

@@ -83,6 +83,7 @@ export default function ProviderDetailPage() {
   const [selectedConnectionIds, setSelectedConnectionIds] = useState([]);
   const [bulkProxyPoolId, setBulkProxyPoolId] = useState("__none__");
   const [bulkUpdatingProxy, setBulkUpdatingProxy] = useState(false);
+  const [bulkUpdatingStatus, setBulkUpdatingStatus] = useState(false);
   const [providerStrategy, setProviderStrategy] = useState(null);
   const [providerStickyLimit, setProviderStickyLimit] = useState("");
   const [thinkingMode, setThinkingMode] = useState("auto");
@@ -915,6 +916,48 @@ export default function ProviderDetailPage() {
     } catch (error) {
       console.log("Error updating connection status:", error);
     }
+  };
+
+  // Bulk enable/disable for the selected connections. Mirrors
+  // `handleUpdateConnectionStatus` per row, but fans out over the selection so
+  // "Select All" -> Disable is a single click. Updates the table optimistically
+  // and only reverts the rows that actually failed.
+  const handleBulkUpdateStatus = async (isActive) => {
+    const ids = [...selectedConnectionIds];
+    if (ids.length === 0 || bulkUpdatingStatus) return;
+
+    setBulkUpdatingStatus(true);
+    const previous = new Map(connections.map((c) => [c.id, c.isActive]));
+    // Optimistic: flip the selected rows immediately.
+    setConnections(prev => prev.map(c => (ids.includes(c.id) ? { ...c, isActive } : c)));
+
+    const failedIds = [];
+    await Promise.all(ids.map(async (id) => {
+      try {
+        const res = await fetch(`/api/providers/${id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ isActive }),
+        });
+        if (!res.ok) failedIds.push(id);
+      } catch (error) {
+        console.log("Error updating connection status:", error);
+        failedIds.push(id);
+      }
+    }));
+
+    if (failedIds.length > 0) {
+      // Revert only the rows that did not persist.
+      setConnections(prev => prev.map(c => (
+        failedIds.includes(c.id) ? { ...c, isActive: previous.get(c.id) } : c
+      )));
+      alert(
+        `${ids.length - failedIds.length} connection(s) ${isActive ? "activated" : "deactivated"}, ` +
+        `${failedIds.length} failed.`,
+      );
+    }
+
+    setBulkUpdatingStatus(false);
   };
 
   const handleSwapPriority = async (index1, index2) => {
@@ -1785,7 +1828,7 @@ export default function ProviderDetailPage() {
                 </div>
               )}
               {connections.length > 0 && (
-                <div className="mb-3 flex items-center gap-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]">
+                <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-black/[0.03] pb-2 dark:border-white/[0.03]">
                   <label className="flex cursor-pointer items-center gap-1.5 text-xs text-text-muted hover:text-primary">
                     <input
                       type="checkbox"
@@ -1795,6 +1838,32 @@ export default function ProviderDetailPage() {
                     />
                     Select All
                   </label>
+                  {selectedConnectionIds.length > 0 && (
+                    <>
+                      <span className="text-xs text-text-muted">
+                        {selectedConnectionIds.length} selected
+                      </span>
+                      <Button
+                        size="xs"
+                        variant="success"
+                        icon="toggle_on"
+                        onClick={() => handleBulkUpdateStatus(true)}
+                        disabled={bulkUpdatingStatus}
+                        loading={bulkUpdatingStatus}
+                      >
+                        Activate
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="secondary"
+                        icon="toggle_off"
+                        onClick={() => handleBulkUpdateStatus(false)}
+                        disabled={bulkUpdatingStatus}
+                      >
+                        Deactivate
+                      </Button>
+                    </>
+                  )}
                 </div>
               )}
               {connectionsList}
