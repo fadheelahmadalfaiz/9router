@@ -47,6 +47,13 @@ const CHECK_ONLY = process.argv.includes("--check");
  *   insertAfter  anchor line; snippet goes right after the first matching line
  *   noBlankBefore  default false (blank line separates); true for arrays/imports
  *   matchIndent    copy the anchor line's leading whitespace onto the snippet
+ *   requireAnchor  if true, never fall back to appending at file end when the
+ *                anchor is gone (use for snippets that are only valid in-place,
+ *                e.g. a `switch` case). Fail loudly instead.
+ *   detectOnly   structural, multi-site feature that CANNOT be repaired
+ *                line-level (e.g. a `switch` case with a big body, or a feature
+ *                spread over several hooks + JSX sites). Checked in both modes;
+ *                never auto-repaired — fails loudly so a human redoes the union.
  */
 const GUARDS = [
   {
@@ -146,6 +153,99 @@ const GUARDS = [
       },
     ],
   },
+  {
+    // Fork-only `switch` case in the quota normalizer. decolua has no
+    // `case "freebuff":` at all, so a `-X theirs` merge of this file drops the
+    // whole case. It is self-contained, so it CAN be re-inserted line-level
+    // right before the next stable case (`case "cursor":`).
+    file: "src/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js",
+    parts: [
+      {
+        label: 'freebuff quota normalizer case',
+        requiresAll: ['case "freebuff":', "priceNote"],
+        // Full literal indentation (no matchIndent) because the snippet is a
+        // nested block: matchIndent would flatten the inner indentation.
+        snippet: [
+          '      case "freebuff":',
+          "        // Session quotas keyed by model id - label rows with the friendly",
+          "        // displayName (from the registry) and keep modelKey for ordering.",
+          "        // Metered rows carry the live Freebucks price (price) + promo tagline",
+          "        // (priceNote), both server-authoritative.",
+          "        if (data.quotas) {",
+          "          Object.entries(data.quotas).forEach(([modelKey, quota]) => {",
+          "            normalizedQuotas.push({",
+          "              name: quota.displayName || modelKey,",
+          "              modelKey,",
+          "              used: quota.used || 0,",
+          "              total: quota.total || 0,",
+          "              resetAt: quota.resetAt || null,",
+          "              recurring: quota.recurring !== false,",
+          "              price: quota.price,",
+          "              priceNote: quota.priceNote,",
+          "            });",
+          "          });",
+          "        }",
+          "        break;",
+        ],
+        insertBeforeAnchor: 'case "cursor":',
+        // Never append a switch case at file end: it would land outside the switch.
+        requireAnchor: true,
+      },
+    ],
+  },
+  {
+    // Fork-only multi-proxy-selection UI. decolua still uses the single
+    // `boundProxyPoolId` model, so `-X theirs` reverts this file to upstream and
+    // drops the whole multi-select feature. It spans many hooks + JSX sites, so
+    // it cannot be repaired line-level — detect-and-fail only.
+    file: "src/app/(dashboard)/dashboard/providers/[id]/ConnectionRow.js",
+    parts: [
+      {
+        label: "multi-proxy-pool selection (selectedProxyIds + rotation strategy)",
+        detectOnly: true,
+        requiresAll: [
+          "selectedProxyIds",
+          "setSelectedProxyIds",
+          "handleToggleProxySelection",
+          "handleApplyProxyChanges",
+          "rotationStrategy",
+        ],
+        // Partial drops keep some usages; require the bulk of them.
+        minCount: { needle: "selectedProxyIds", min: 20 },
+      },
+    ],
+  },
+  {
+    // Fork-only device-code provider list + egress proxy-pool picker. decolua
+    // keeps a local `deviceCodeProviders` array without the fork's device-code
+    // UX (proxy pool picker, persisted choice), so a merge reverts the file.
+    file: "src/shared/components/OAuthModal.js",
+    parts: [
+      {
+        label: "DEVICE_CODE_PROVIDERS list + device-code egress picker",
+        detectOnly: true,
+        requiresAll: [
+          "DEVICE_CODE_PROVIDERS",
+          "oauthProxyPoolStorageKey",
+          "OAuthProxyPoolSelect",
+        ],
+        minCount: { needle: "DEVICE_CODE_PROVIDERS", min: 4 },
+      },
+    ],
+  },
+  {
+    // Fork-only "reveal stored key" modal. decolua has no RevealKeyModal import,
+    // state, or JSX, so a merge drops all three sites.
+    file: "src/app/(dashboard)/dashboard/usage/components/ProviderLimits/index.js",
+    parts: [
+      {
+        label: "RevealKeyModal (import + revealTarget state + JSX)",
+        detectOnly: true,
+        requiresAll: ["RevealKeyModal", "revealTarget", "setRevealTarget"],
+        minCount: { needle: "RevealKeyModal", min: 2 },
+      },
+    ],
+  },
 ];
 
 function readFile(rel) {
@@ -160,6 +260,28 @@ function writeFile(abs, text) {
 
 function hasAny(text, needles) {
   return needles.some((n) => text.includes(n));
+}
+
+/**
+ * Is a guard part satisfied? `-X theirs` can drop a file's fork lines PARTIALLY
+ * (it keeps whole hunks, so a feature spread over several hunks survives in
+ * pieces — e.g. 24 `selectedProxyIds` usages reduced to 13). So a part can
+ * assert three things:
+ *   requires     at least one of these substrings is present (any-of)
+ *   requiresAll  every one of these substrings is present (all-of)
+ *   minCount     `needle` occurs at least `min` times (catches partial drops)
+ *   detectCorrupt  a regex that must NOT match (structural corruption)
+ */
+function isPartSatisfied(text, part) {
+  if (part.detectCorrupt && part.detectCorrupt.test(text)) return false;
+  if (part.requiresAll && !part.requiresAll.every((n) => text.includes(n))) return false;
+  if (part.minCount) {
+    const { needle, min } = part.minCount;
+    const count = text.split(needle).length - 1;
+    if (count < min) return false;
+  }
+  if (part.requires && !hasAny(text, part.requires)) return false;
+  return true;
 }
 
 function insertAfterLine(text, anchorLine, snippetLines, noBlankBefore = false, matchIndent = false) {
@@ -218,16 +340,22 @@ for (const g of GUARDS) {
   let filePatched = false;
 
   for (const part of g.parts) {
-    // A part with `detectCorrupt` is satisfied only if all `requires` markers
-    // exist AND the corruption regex does NOT match.
+    // A part is satisfied when every assertion passes: any `requires`, all
+    // `requiresAll`, `minCount` occurrence, and no `detectCorrupt` match.
     const corrupt = part.detectCorrupt ? part.detectCorrupt.test(text) : false;
-    if (!corrupt && hasAny(text, part.requires)) {
+    if (isPartSatisfied(text, part)) {
       console.log(`OK    ${g.file}: ${part.label}`);
       continue;
     }
-    if (CHECK_ONLY) {
+    // `detectOnly` parts (structural, multi-site fork features) cannot be
+    // re-inserted line-level: a partial repair would leave orphaned usages and
+    // a file that does not compile. Report and fail loudly instead — in BOTH
+    // modes — so the workflow's hard `--check` gate can never push a union that
+    // silently dropped them.
+    if (CHECK_ONLY || part.detectOnly) {
       console.error(
-        `::error::guard(${corrupt ? "CORRUPT" : "MISSING"}) ${g.file}: ${part.label}`,
+        `::error::guard(${corrupt ? "CORRUPT" : "MISSING"}) ${g.file}: ${part.label}` +
+          (part.detectOnly ? " [detect-only: needs manual union repair]" : ""),
       );
       failed++;
       continue;
@@ -257,12 +385,15 @@ for (const g of GUARDS) {
         part.matchIndent,
       );
     }
-    // If the anchor line itself is gone, fall back to appending at file end.
-    if (repaired === null) {
+    // If the anchor line itself is gone, fall back to appending at file end —
+    // but NEVER for parts flagged `requireAnchor` (e.g. a `switch` case): an
+    // appended case would land outside the switch and produce dead/broken code.
+    // Those fail loudly instead.
+    if (repaired === null && !part.requireAnchor) {
       repaired = text.replace(/\n?$/, "\n") + "\n" + part.snippet.join("\n") + "\n";
     }
     const stillCorrupt = part.detectCorrupt ? part.detectCorrupt.test(repaired) : false;
-    if (repaired === null || stillCorrupt || !hasAny(repaired, part.requires)) {
+    if (repaired === null || stillCorrupt || !isPartSatisfied(repaired, part)) {
       console.error(`::error::guard(UNREPAIRABLE) ${g.file}: ${part.label}`);
       failed++;
       continue;

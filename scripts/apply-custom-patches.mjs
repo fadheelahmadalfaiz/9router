@@ -13,7 +13,6 @@ const files = {
   serialModelTestsTest: 'tests/unit/serialModelTests.test.js',
   providerPage: 'src/app/(dashboard)/dashboard/providers/[id]/page.js',
   modelRow: 'src/app/(dashboard)/dashboard/providers/[id]/ModelRow.js',
-  syncWorkflow: '.github/workflows/sync-upstream.yml',
 };
 
 function filePath(relativePath) {
@@ -99,7 +98,7 @@ function removeCompatibleSingleConnectionLimits(source) {
   let out = source;
 
   // Older upstream versions had explicit single-connection guards for compatible nodes.
-  // Keep this patch idempotent so custom-patch can be regenerated from master every hour.
+  // Keep this patch idempotent: it runs hourly on master after each decolua merge.
   const guards = [
     `      const existingConnections = await getProviderConnections({ provider });\n      if (existingConnections.length > 0) {\n        return NextResponse.json({ error: "Only one connection is allowed for this OpenAI Compatible node" }, { status: 400 });\n      }\n`,
     `      const existingConnections = await getProviderConnections({ provider });\n      if (existingConnections.length > 0) {\n        return NextResponse.json({ error: "Only one connection is allowed for this Anthropic Compatible node" }, { status: 400 });\n      }\n`,
@@ -122,117 +121,6 @@ function patchProvidersRoute() {
     console.log('Custom patch already applied / not needed on this upstream version: compatible provider single-connection limits.');
   }
 }
-
-const configContents = `import pkg from "../../../package.json" with { type: "json" };
-
-// App configuration
-export const APP_CONFIG = {
-  name: "IzRouter Proxy",
-  description: "AI Infrastructure Management",
-  version: pkg.version,
-};
-
-// GitHub configuration
-export const GITHUB_CONFIG = {
-  changelogUrl: "https://raw.githubusercontent.com/decolua/9router/refs/heads/master/CHANGELOG.md",
-  donateUrl: "https://9router.com/api/donate",
-};
-
-// Updater configuration
-export const UPDATER_CONFIG = {
-  npmPackageName: "9router",
-  installCmd: "npm i -g 9router",
-  installCmdLatest: "npm i -g 9router@latest --prefer-online",
-  shutdownCountdownSec: 3,
-  exitDelayMs: 500,
-  statusPort: 20129,
-  statusPollIntervalMs: 1000,
-  statusLogTailLines: 8,
-  installRetries: 3,
-  installRetryDelayMs: 5000,
-  lingerAfterDoneMs: 30000,
-  waitForExitMinMs: 5000,
-  waitForExitMaxMs: 20000,
-  waitForExitCheckMs: 500,
-  appPort: 20128,
-};
-
-// Theme configuration
-export const THEME_CONFIG = {
-  storageKey: "theme",
-  defaultTheme: "system", // "light" | "dark" | "system"
-};
-
-// Subscription
-export const SUBSCRIPTION_CONFIG = {
-  price: 1.0,
-  currency: "USD",
-  interval: "month",
-  planName: "Pro Plan",
-};
-
-// API endpoints
-export const API_ENDPOINTS = {
-  users: "/api/users",
-  providers: "/api/providers",
-  payments: "/api/payments",
-  auth: "/api/auth",
-};
-
-export const CONSOLE_LOG_CONFIG = {
-  maxLines: 200,
-  pollIntervalMs: 1000,
-};
-
-// Client-side store TTL: how long fetched data stays fresh before re-fetching
-export const CLIENT_STORE_TTL_MS = 60000;
-
-// Quota auto-ping: keep 5h windows warm by sending a tiny request right after reset.
-export const QUOTA_AUTOPING_CONFIG = {
-  tickIntervalMs: 60000,                // scheduler tick
-  pingLeadMs: 5000,                     // fire once reset passes (within tolerance)
-  refreshAheadMs: 300000,               // refetch usage when within 5min of reset
-  failureCooldownMs: 900000,            // avoid failed ping spam while upstream/auth is unhealthy
-  providers: {
-    claude: {
-      settingsKey: "claudeAutoPing",    // preserve existing settings contract
-      quotaKey: "session (5h)",         // quota key returned by usage handler
-      pingModel: "claude-haiku-4-5-20251001",
-      pingText: "hi",
-      pingMaxTokens: 1,
-    },
-    codex: {
-      settingsKey: "codexAutoPing",
-      quotaKey: "session",
-      pingWhenResetAtSlides: true,
-      resetAtDriftMs: 30000,
-      minPingIntervalMs: 600000,
-      skipWhenBlockingQuotaExhausted: true,
-      // Free and Plus Codex accounts both expose gpt-5.5; avoid fallback probes that waste requests.
-      pingModel: "gpt-5.5",
-      pingText: "hi",
-      pingInstructions: "Reply with OK.",
-      pingReasoningEffort: "none",
-    },
-  },
-};
-
-// Re-export from providers.js for backward compatibility
-export {
-  FREE_PROVIDERS,
-  OAUTH_PROVIDERS,
-  APIKEY_PROVIDERS,
-  WEB_COOKIE_PROVIDERS,
-  AI_PROVIDERS,
-  AUTH_METHODS,
-} from "./providers.js";
-
-// Re-export from models.js for backward compatibility
-export {
-  PROVIDER_MODELS,
-  AI_MODELS,
-} from "./models.js";
-`;
 
 const colorsContents = `// IzRouter color palette
 // Light theme: warm neutral surfaces with citron primary
@@ -608,8 +496,35 @@ ModelRow.propTypes = {
 };
 `;
 
+/**
+ * Branding is the ONLY fork delta in src/shared/constants/config.js: everything
+ * else in that file tracks upstream verbatim. So rewrite just the APP_CONFIG
+ * `name` value instead of overwriting the whole file from a frozen copy — a
+ * whole-file template silently reverted every upstream change to this file on
+ * each sync (it is what kept re-imposing the retired `pingModel: "gpt-5.5"`
+ * after upstream moved to gpt-5.6-terra).
+ */
+function ensureAppName() {
+  const source = readRequired(files.config);
+  if (source.includes('name: "IzRouter Proxy"')) return;
+
+  const anchor = source.indexOf("APP_CONFIG");
+  if (anchor === -1) {
+    console.error(`Missing expected anchor in ${files.config}: APP_CONFIG export`);
+    process.exit(1);
+  }
+  const head = source.slice(0, anchor);
+  const tail = source.slice(anchor);
+  const nameRe = /(\bname:\s*")[^"]*(")/;
+  if (!nameRe.test(tail)) {
+    console.error(`Missing expected anchor in ${files.config}: APP_CONFIG.name`);
+    process.exit(1);
+  }
+  writeIfChanged(files.config, head + tail.replace(nameRe, '$1IzRouter Proxy$2'), 'restored IzRouter app name');
+}
+
 function patchBranding() {
-  writeIfChanged(files.config, configContents, 'restored IzRouter app config');
+  ensureAppName();
   writeIfChanged(files.colors, colorsContents, 'restored citron/violet color constants');
 
   let globals = readRequired(files.globals);
@@ -1131,7 +1046,7 @@ function createInitialModelAutoTestProgress() {
             const canRunAutoTest = (connections.length > 0 || isFreeNoAuth) && testableModels.length > 0;
             return (
               <div className="flex flex-wrap gap-2">
-`;
+${AUTO_TEST_BUTTONS}`;
 
     if (source.includes(OLD_BLOCK)) {
       source = replaceAllLiteral(source, OLD_BLOCK, NEW_BLOCK);
@@ -1232,35 +1147,8 @@ function patchAutoTestFiles() {
   assertContains(files.modelRow, modelRow, 'disabled={isTesting || isTestDisabled}', 'ModelRow disabled test button');
 }
 
-function patchWorkflow() {
-  let source = readRequired(files.syncWorkflow);
-  const stagedFilesBlock = `            git add \\
-              src/app/api/providers/route.js \\
-              src/shared/constants/config.js \\
-              src/shared/constants/colors.js \\
-              src/app/globals.css \\
-              src/shared/utils/serialModelTests.js \\
-              tests/unit/serialModelTests.test.js \\
-              'src/app/(dashboard)/dashboard/providers/[id]/page.js' \\
-              'src/app/(dashboard)/dashboard/providers/[id]/ModelRow.js' \\
-              scripts/apply-custom-patches.mjs \\
-              .github/workflows/sync-upstream.yml
-`;
-  if (!source.includes("'src/app/(dashboard)/dashboard/providers/[id]/page.js'")) {
-    source = replaceRequiredPattern(
-      files.syncWorkflow,
-      source,
-      /^            git add .*\.github\/workflows\/sync-upstream\.yml\r?$/m,
-      stagedFilesBlock.trimEnd(),
-      'staged all regenerated custom patch files',
-    );
-  }
-  writeIfChanged(files.syncWorkflow, source, 'updated upstream sync staging list');
-}
-
 patchProvidersRoute();
 patchBranding();
 patchAutoTestFiles();
-patchWorkflow();
 
 console.log('Patch script finished. Build/CI will validate the Next.js route and dashboard.');

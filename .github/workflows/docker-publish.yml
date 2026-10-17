@@ -9,14 +9,14 @@ on:
       ref:
         description: Git ref to build
         required: false
-        default: custom-patch
+        default: master
   workflow_call:
     inputs:
       ref:
         description: Git ref to build
         required: false
         type: string
-        default: custom-patch
+        default: master
 
 jobs:
   build-and-push:

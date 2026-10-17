@@ -1,31 +1,26 @@
 name: Sync MIBP
 
-# Keeps the `sync-mibp` branch up to date with BOTH of its upstreams:
-#   - mhiqrambg/9router-mibp-version (default branch: master)  [fork base]
-#   - decolua/9router                (default branch: master)  [upstream features]
+# MANUAL ONLY — merges the fork base (mhiqrambg/9router-mibp-version) into the
+# union branch `master`.
 #
-# `sync-mibp` is the UNION of the two repos: it carries every MIBP fork feature
-# AND every decolua upstream feature. The fork base (mibp) is merged first and
-# wins plain conflicts; decolua is merged second so its new features are additive.
-# Fork-only features are then re-protected by the guards further down
-# (workflow restore, preferredConnectionId guard, apply-custom-patches.mjs).
+# Why manual? mibp changes rarely (it is the fork base this repo descends from),
+# so there is no value in polling it hourly. decolua — the fast-moving feature
+# upstream — is the one that needs an hourly sync, and that lives in
+# sync-upstream.yml. Splitting the two keeps exactly ONE workflow owning
+# `master` on a schedule, so two crons can never race on the same branch.
 #
-# What this workflow does, every hour:
-#   1. Merge mibp/master into sync-mibp (fork base; -X ours on conflict).
-#   2. Merge decolua/master into sync-mibp (upstream features; -X theirs on conflict).
-#   2b. Re-protect fork-only files/workflows + re-apply custom patches.
-#   2c. Guard fork features lost by `-X theirs` (guard-fork-features.mjs) and fail
-#       the job if any could not be restored — never push a broken union.
-#   3. Refresh npm dependencies inside their semver ranges (npm update) and commit the lockfile.
-#   4. Trigger the Docker image build from sync-mibp if anything changed.
+# Run this when mibp publishes a release you want to absorb:
+#   Actions -> Sync MIBP -> Run workflow
 #
-# NOTE: decolua/9router is ALSO tracked on `master`/`custom-patch` by
-# sync-upstream.yml. That is intentional: `master` tracks decolua cleanly for
-# reference, while `sync-mibp` is the combined deployment branch.
+# What it does:
+#   1. Merge mibp/master into master (-X ours: on a plain conflict, master's
+#      union content wins, so the fork's customizations are never clobbered).
+#   2. Restore this fork's own CI files (mibp does not carry them).
+#   3. Re-apply custom patches + repair fork features lost in the merge.
+#   4. Hard-gate: refuse to push a broken union.
+#   5. Push (never force) and rebuild the image only when the tree changed.
 
 on:
-  schedule:
-    - cron: '15 * * * *'
   workflow_dispatch:
     inputs:
       skip_deps:
@@ -38,15 +33,14 @@ permissions:
   packages: write
 
 concurrency:
-  group: sync-mibp
+  # Shares the `master` group with sync-upstream.yml so the two workflows can
+  # never push master concurrently.
+  group: sync-master
   cancel-in-progress: false
 
 env:
-  # The fork base for the sync-mibp branch.
   MIBP_UPSTREAM: https://github.com/mhiqrambg/9router-mibp-version.git
-  # The decolua upstream whose features are unioned into sync-mibp.
-  DECOLUA_UPSTREAM: https://github.com/decolua/9router.git
-  BRANCH: sync-mibp
+  BRANCH: master
 
 jobs:
   sync:
@@ -57,9 +51,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: sync-mibp
-          # GH_PAT (not GITHUB_TOKEN) is required: upstream modifies files under
-          # .github/workflows/, and GITHUB_TOKEN is forbidden from pushing those
+          ref: master
+          # GH_PAT (not GITHUB_TOKEN) is required: this job restores and pushes
+          # files under .github/workflows/, which GITHUB_TOKEN may not modify
           # ("refusing to allow a GitHub App to create or update workflow ...").
           token: ${{ secrets.GH_PAT }}
 
@@ -67,7 +61,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Sync mibp + decolua upstreams -> sync-mibp
+      - name: Merge mibp upstream -> master
         id: sync
         env:
           INPUT_SKIP_DEPS: ${{ inputs.skip_deps }}
@@ -78,62 +72,41 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git remote add mibp "$MIBP_UPSTREAM" || git remote set-url mibp "$MIBP_UPSTREAM"
-          git remote add decolua "$DECOLUA_UPSTREAM" || git remote set-url decolua "$DECOLUA_UPSTREAM"
           git fetch mibp master
-          git fetch decolua master
           git fetch origin "$BRANCH" || true
 
-          # 1) Bring the branch in line with the fork base, preferring the fork
-          #    on plain conflicts so MIBP-only features are never silently lost.
           git checkout "$BRANCH"
           BEFORE_TREE=$(git rev-parse "HEAD^{tree}")
 
+          # 1) Merge the fork base. `-X ours` so a plain conflict keeps master's
+          #    union content: master is already a superset of mibp, so mibp must
+          #    only ever be additive here.
           if git merge-base --is-ancestor "mibp/master" HEAD; then
             echo "Already up to date with mibp/master."
-            NEEDS_FORCE=false
           elif git merge --ff-only "mibp/master"; then
             echo "Fast-forwarded $BRANCH to mibp/master"
-            NEEDS_FORCE=false
           elif git merge "mibp/master" --no-edit -X ours; then
             echo "Merged mibp/master into $BRANCH (ours on conflict)"
-            NEEDS_FORCE=false
           else
-            # Fork base rewrote history or has an intractable conflict: follow it.
-            echo "Merge failed; resetting $BRANCH to mibp/master (history rewrite)"
             git merge --abort 2>/dev/null || true
-            git reset --hard "mibp/master"
-            NEEDS_FORCE=true
-          fi
-
-          # 1b) Union in the decolua upstream. -X theirs keeps decolua's new
-          #     features on additive conflicts; fork-only features are restored
-          #     by the guards below.
-          if git merge-base --is-ancestor "decolua/master" HEAD; then
-            echo "Already up to date with decolua/master."
-          elif git merge --ff-only "decolua/master"; then
-            echo "Fast-forwarded $BRANCH to decolua/master"
-          elif git merge "decolua/master" --no-edit -X theirs; then
-            echo "Merged decolua/master into $BRANCH (theirs on conflict)"
-          else
-            echo "::error::decolua/master merge failed with conflicts; leaving branch on mibp base only."
-            git merge --abort 2>/dev/null || true
+            echo "::error::mibp/master merge failed; refusing to touch $BRANCH."
+            exit 1
           fi
 
           # Abort if a merge ever introduces conflict markers.
           if git grep -n -E '^(<<<<<<<|>>>>>>>) ' -- .; then
-            echo "Conflict markers found after merge; aborting."
+            echo "::error::Conflict markers found after merge; aborting."
             exit 1
           fi
 
-          # 1c) Protect our own CI. Neither upstream carries these fork workflows,
-          # so a merge would DELETE sync-mibp.yml and sync-upstream.yml, and
-          # OVERWRITE docker-publish.yml with a variant that pushes to Docker Hub.
-          # Restore the pre-merge versions from BEFORE_REF.
+          # 2) Protect this fork's own CI. mibp does not carry these files, so a
+          #    merge would DELETE the sync workflows and OVERWRITE
+          #    docker-publish.yml. Restore the pre-merge versions from BEFORE_REF.
           git fetch origin "$BRANCH"
           BEFORE_REF=$(git rev-parse "origin/$BRANCH")
           for f in \
-            .github/workflows/sync-mibp.yml \
             .github/workflows/sync-upstream.yml \
+            .github/workflows/sync-mibp.yml \
             .github/workflows/docker-publish.yml \
             .github/workflows/gitbook-pages.yml.disabled \
             .github/dependabot.yml
@@ -144,13 +117,11 @@ jobs:
             fi
           done
 
-          # 1c) Guard the MIBP-only chat handler. Upstream deliberately dropped
-          # `preferredConnectionId` from src/sse/handlers/chat.js, but this fork
-          # needs it (Antigravity MITM pins an account via `x-connection-id`).
-          # A naive merge produces the worst of both worlds: declaration removed,
-          # usages kept -> every combo request throws
-          #   ReferenceError: preferredConnectionId is not defined
-          # Detect that exact state and restore our copy instead of shipping it.
+          # 3a) Guard the fork-only chat handler. Upstream dropped
+          #     `preferredConnectionId` from src/sse/handlers/chat.js, but this
+          #     fork needs it (Antigravity MITM pins an account via
+          #     `x-connection-id`). An orphan declaration/usage split throws
+          #     `ReferenceError: preferredConnectionId is not defined`.
           CHAT=src/sse/handlers/chat.js
           if git cat-file -e "$BEFORE_REF:$CHAT" 2>/dev/null; then
             USES=$(grep -c 'preferredConnectionId' "$CHAT" || true)
@@ -168,37 +139,33 @@ jobs:
               echo "Restored $f from $BEFORE_REF"
             fi
           done
-          # If upstream deleted this file, drop the deletion so it stays on this branch.
-          git diff --name-only --diff-filter=D HEAD | grep -E '^\.github/' || true
 
-          # 1d) Re-apply the fork's durable custom patches. The decolua merge can
-          # overwrite fork-branded files (provider page auto-test wiring, ModelRow
-          # disable support, IzRouter branding). apply-custom-patches.mjs restores
-          # them idempotently; it exits non-zero only if a required anchor is gone.
-          if [ -f scripts/apply-custom-patches.mjs ] && [ -f package.json ]; then
+          # 3b) Re-apply the fork's durable custom patches (idempotent, surgical).
+          if [ -f scripts/apply-custom-patches.mjs ]; then
             echo "::group::apply custom patches (fork features)"
-            npm install --no-audit --no-fund --ignore-scripts >/dev/null 2>&1 || true
             node scripts/apply-custom-patches.mjs 2>&1 | tail -n 40
             echo "::endgroup::"
           else
-            echo "apply-custom-patches.mjs or package.json missing; skipping."
+            echo "::error::scripts/apply-custom-patches.mjs missing; cannot restore fork customizations."
+            exit 1
           fi
 
-          # 1e) Union guard: `-X theirs` takes decolua's WHOLE blob for files both
-          #     sides edited, so fork snippets in those files vanish silently (the
-          #     merge still exits 0 with no conflict markers). guard-fork-features.mjs
-          #     re-inserts each known fork-only line (FREEBUFF_CONFIG, freebuff in
-          #     the OAuth route list, the DonateModal wiring in Header.js) only when
-          #     missing, so decolua's new additions in the same file survive too.
+          # 3c) Repair fork snippets silently dropped by the merge.
           if [ -f scripts/guard-fork-features.mjs ]; then
-            echo "::group::guard fork features lost by -X theirs"
-            node scripts/guard-fork-features.mjs 2>&1
+            echo "::group::guard fork features lost by the merge"
+            GUARD_RC=0
+            node scripts/guard-fork-features.mjs 2>&1 || GUARD_RC=$?
             echo "::endgroup::"
+            if [ "$GUARD_RC" -ne 0 ]; then
+              echo "::error::Fork features were dropped by the merge and could not be auto-repaired (see the [detect-only] lines above). Refusing to push $BRANCH. Repair them manually on the union branch, then re-run this workflow."
+              exit 1
+            fi
           else
-            echo "::warning::scripts/guard-fork-features.mjs missing; skipping fork-feature guard."
+            echo "::error::scripts/guard-fork-features.mjs missing; cannot verify the union."
+            exit 1
           fi
 
-          # 2) Refresh dependencies within their declared semver ranges.
+          # 4) Refresh dependencies within their declared semver ranges.
           if [ "${INPUT_SKIP_DEPS:-false}" != "true" ] && [ -f package.json ]; then
             echo "::group::npm update (semver-safe)"
             npm update --no-audit --no-fund 2>&1 | tail -n 40 || \
@@ -208,8 +175,7 @@ jobs:
             echo "Dependency refresh skipped."
           fi
 
-          # 2b) Hard gate: a merge must never reintroduce an orphan
-          # preferredConnectionId. Fail the job instead of pushing broken code.
+          # 5a) Hard gate: never push an orphan preferredConnectionId.
           if [ -f "$CHAT" ]; then
             USES=$(grep -c 'preferredConnectionId' "$CHAT" || true)
             DECLS=$(grep -cE '(const|let|var)[[:space:]]+preferredConnectionId' "$CHAT" || true)
@@ -217,47 +183,38 @@ jobs:
               echo "::error::$CHAT would throw 'preferredConnectionId is not defined' (uses=$USES decls=$DECLS). Refusing to push."
               exit 1
             fi
-          fi
-          node --check "$CHAT" 2>&1 || { echo "::error::$CHAT failed syntax check"; exit 1; }
-
-          # 2c) Hard gate: every fork feature must survive the union. If the guard
-          #     in step 1e could not repair a missing snippet, fail loudly instead
-          #     of pushing a branch that silently dropped a fork feature.
-          if [ -f scripts/guard-fork-features.mjs ]; then
-            if ! node scripts/guard-fork-features.mjs --check; then
-              echo "::error::sync-mibp lost one or more fork features after the merge. Refusing to push."
-              exit 1
-            fi
+            node --check "$CHAT" 2>&1 || { echo "::error::$CHAT failed syntax check"; exit 1; }
           fi
 
-          # 3) Commit only when the working tree actually changed.
+          # 5b) Hard gate: every fork feature must survive the union.
+          if ! node scripts/guard-fork-features.mjs --check; then
+            echo "::error::master lost one or more fork features after the merge. Refusing to push."
+            exit 1
+          fi
+
+          # 6) Commit only when the working tree actually changed.
           git add -A
           if git diff --cached --quiet; then
             echo "Working tree clean after sync."
           else
-            git commit -m "chore(sync): merge mibp + decolua upstreams + refresh dependencies"
+            git commit -m "chore(sync): merge mibp upstream into master"
           fi
 
-          # 4) Compare TREE hashes (content), not commit SHAs: a no-op merge
+          # 7) Compare TREE hashes (content), not commit SHAs: a no-op merge
           #    commit must not trigger a rebuild.
           AFTER_TREE=$(git rev-parse "HEAD^{tree}")
           if [ "$BEFORE_TREE" = "$AFTER_TREE" ]; then
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
             echo "No content changes (tree $AFTER_TREE)"
           else
-            if [ "$NEEDS_FORCE" = "true" ]; then
-              git push --force-with-lease origin "$BRANCH"
-            else
-              git push origin "$BRANCH"
-            fi
+            # Plain push: this workflow never rewrites history, so no force.
+            git push origin "$BRANCH"
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             echo "Pushed $BRANCH (tree $BEFORE_TREE -> $AFTER_TREE)"
           fi
 
   # Self-contained GHCR-only build. We deliberately do NOT reuse
-  # docker-publish.yml: upstream (mhiqrambg) removed its `workflow_call` trigger
-  # and that workflow now pushes to Docker Hub, which needs DOCKERHUB_* secrets
-  # we do not maintain on this fork.
+  # docker-publish.yml: that workflow targets tag releases (`v*`).
   build-and-push:
     needs: sync
     if: needs.sync.outputs.has_changes == 'true'
@@ -269,7 +226,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: sync-mibp
+          ref: master
 
       # GHCR image references must be lowercase, but this repo's name (IzRouter)
       # is not. Normalise once and reuse it in metadata + cache refs.
@@ -286,12 +243,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Optional: log in to Docker Hub when credentials exist. Anonymous
-      # docker.io pulls are limited to 100/6h per IP and the shared GitHub
-      # runner IP pool regularly returns "429 Too Many Requests" when fetching
-      # the pinned `node:22-alpine` base image. Authenticating raises the limit
-      # to 200/6h and is the most reliable fix. Skipped gracefully when the
-      # secrets are not configured (fork-friendly).
+      # Optional: log in to Docker Hub when credentials exist (avoids the shared
+      # runner IP 429s when pulling the pinned base image).
       - name: Log in to Docker Hub (optional)
         if: ${{ env.DOCKERHUB_USERNAME != '' }}
         env:
@@ -303,9 +256,7 @@ jobs:
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
 
-      # Pre-pull the pinned base image with retries/backoff. Docker Hub 429s are
-      # usually transient; retrying here avoids a failed buildx step. Pulling the
-      # exact digest first also warms the local store so buildx reuses it.
+      # Pre-pull the pinned base image with retries/backoff.
       - name: Pre-pull base image (retry on rate limit)
         run: |
           set -euo pipefail

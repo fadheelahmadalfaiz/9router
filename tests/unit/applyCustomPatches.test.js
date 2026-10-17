@@ -205,12 +205,29 @@ async function createFixture(overrides = {}) {
 
   const files = {
     "src/app/api/providers/route.js": providerRouteWithGuards,
-    "src/shared/constants/config.js": "export const APP_CONFIG = { name: \"9Router\" };\n",
+    // Mirrors upstream's real file: branding is the ONLY fork delta, so the
+    // script must rewrite just APP_CONFIG.name and leave the rest untouched.
+    "src/shared/constants/config.js": `import pkg from "../../../package.json" with { type: "json" };
+
+// App configuration
+export const APP_CONFIG = {
+  name: "9Router Proxy",
+  description: "AI Infrastructure Management",
+  version: pkg.version,
+};
+
+export const QUOTA_AUTOPING_CONFIG = {
+  providers: {
+    codex: {
+      pingModel: "gpt-5.6-terra",
+    },
+  },
+};
+`,
     "src/shared/constants/colors.js": "export const COLORS = {};\n",
     "src/app/globals.css": globalsAnchor,
     "src/app/(dashboard)/dashboard/providers/[id]/page.js": providerPageAnchor,
     "src/app/(dashboard)/dashboard/providers/[id]/ModelRow.js": modelRowAnchor,
-    ".github/workflows/sync-upstream.yml": "            git add src/app/api/providers/route.js scripts/apply-custom-patches.mjs .github/workflows/sync-upstream.yml\n",
     ...overrides,
   };
 
@@ -291,18 +308,21 @@ describe("apply-custom-patches", () => {
     await expect(runScript(root)).rejects.toMatchObject({ code: 1 });
   });
 
-  it("stages every regenerated file in the sync workflow", async () => {
+  it("rewrites only APP_CONFIG.name and preserves upstream config values", async () => {
     const root = await createFixture();
 
     await runScript(root);
 
-    const workflow = await readFile(root, ".github/workflows/sync-upstream.yml");
-    expect(workflow).toContain("src/shared/constants/config.js");
-    expect(workflow).toContain("src/shared/constants/colors.js");
-    expect(workflow).toContain("src/app/globals.css");
-    expect(workflow).toContain("src/shared/utils/serialModelTests.js");
-    expect(workflow).toContain("tests/unit/serialModelTests.test.js");
-    expect(workflow).toContain("'src/app/(dashboard)/dashboard/providers/[id]/page.js'");
-    expect(workflow).toContain("'src/app/(dashboard)/dashboard/providers/[id]/ModelRow.js'");
+    const config = await readFile(root, "src/shared/constants/config.js");
+    // Branding is the fork delta...
+    expect(config).toContain('name: "IzRouter Proxy"');
+    expect(config).not.toContain('name: "9Router Proxy"');
+    // ...but every other value must track upstream. A whole-file template used
+    // to clobber this file, silently reverting the retired `gpt-5.5` pingModel
+    // on each sync. Guard that regression.
+    expect(config).toContain('pingModel: "gpt-5.6-terra"');
+    expect(config).not.toContain("gpt-5.5");
+    expect(config).toContain("AI Infrastructure Management");
+    expect(config).toContain("version: pkg.version");
   });
 });
